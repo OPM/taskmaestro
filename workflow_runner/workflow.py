@@ -208,6 +208,12 @@ class Workflow:
                     f"({sinks}); specify result_task explicitly"
                 )
 
+    def to_mermaid(self) -> str:
+        """Return a Mermaid diagram string for this workflow."""
+        from workflow_runner.visualization import to_mermaid
+
+        return to_mermaid(self)
+
     def _find_sinks(self) -> list[str]:
         """Return task names with no downstream dependents."""
         has_dependents: set[str] = set()

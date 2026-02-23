@@ -285,6 +285,12 @@ def main() -> None:
         print(f"    {name:20s} {duration:.4f}s")
     print()
 
+    # Print Mermaid diagram
+    print("Mermaid diagram:")
+    print("```mermaid")
+    print(workflow.to_mermaid(), end="")
+    print("```")
+
 
 if __name__ == "__main__":
     import logging

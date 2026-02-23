@@ -14,6 +14,7 @@ from workflow_runner.exceptions import (
 from workflow_runner.job import Job, JobStatus, TaskResult, TaskStatus
 from workflow_runner.runner import Runner
 from workflow_runner.task import Task
+from workflow_runner.visualization import to_mermaid
 from workflow_runner.workflow import Workflow, WorkflowBuilder
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "WorkflowBuilder",
     "WorkflowDefinitionError",
     "WorkflowRunnerError",
+    "to_mermaid",
 ]
