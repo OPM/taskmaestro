@@ -1,12 +1,14 @@
 """Example: Text Analysis Pipeline (DAG with fan-in)
 
-This pipeline takes raw text, then fans out to three parallel analysis tasks
-(word stats, keyword extraction, readability scoring), and fans back in to
-produce a unified report.
+This pipeline takes raw text, fans out to PrepareText and GenerateStopWords,
+then fans in to ComputeWordStats and ExtractKeywords, while ScoreReadability
+depends only on PrepareText, and all merge into a final BuildReport.
 
-    TextInput ──► WordStats    ──┐
-               ├► Keywords      ──┼──► BuildReport ──► AnalysisReport
-               └► Readability  ──┘
+                  ┌── PrepareText ───────── ScoreReadability ──┐
+    TextInput ──►│                 ↘              ↘            │
+                  │           ComputeWordStats  ExtractKeywords ──► BuildReport
+                  │                 ↗              ↗
+                  └── GenerateStopWords ──────────┘
 
 Run:
     source .venv/bin/activate
@@ -15,7 +17,6 @@ Run:
 
 from __future__ import annotations
 
-import math
 import re
 from collections import Counter
 
@@ -30,7 +31,6 @@ from workflow_runner import (
 )
 from workflow_runner.hooks import LoggingHook, TimingHook
 
-
 # ---------------------------------------------------------------------------
 # Models
 # ---------------------------------------------------------------------------
@@ -41,6 +41,26 @@ class TextInput(BaseModel):
 
     text: str
     title: str = "Untitled"
+
+
+class TextContent(BaseModel):
+    """Output of PrepareText: passes through text and title."""
+
+    text: str
+    title: str
+
+
+class StopWordsOutput(BaseModel):
+    """Output of GenerateStopWords."""
+
+    stop_words: list[str]
+
+
+class AnalysisInput(BaseModel):
+    """Fan-in input for word_stats and keywords tasks."""
+
+    content: TextContent
+    stop_words: StopWordsOutput
 
 
 class WordStatsOutput(BaseModel):
@@ -85,31 +105,51 @@ class AnalysisReport(BaseModel):
 # Tasks
 # ---------------------------------------------------------------------------
 
-STOP_WORDS = {
-    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-    "have", "has", "had", "do", "does", "did", "will", "would", "could",
-    "should", "may", "might", "shall", "can", "need", "dare", "ought",
-    "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-    "into", "through", "during", "before", "after", "and", "but", "or",
-    "nor", "not", "so", "yet", "both", "either", "neither", "each",
-    "every", "all", "any", "few", "more", "most", "other", "some",
-    "such", "no", "only", "own", "same", "than", "too", "very",
-    "just", "because", "it", "its", "this", "that", "these", "those",
-    "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
-    "she", "her", "they", "them", "their", "what", "which", "who",
-}
+class PrepareText(Task[TextInput, TextContent]):
+    """Passthrough task: provides text content to downstream tasks."""
+
+    name = "prepare_text"
+
+    def run(self, input: TextInput, ctx: ExecutionContext) -> TextContent:
+        ctx.logger.info("Preparing text for '%s'", input.title)
+        return TextContent(text=input.text, title=input.title)
 
 
-class ComputeWordStats(Task[TextInput, WordStatsOutput]):
+class GenerateStopWords(Task[TextInput, StopWordsOutput]):
+    """Generate the set of stop words to filter out during analysis."""
+
+    name = "generate_stop_words"
+
+    def run(self, input: TextInput, ctx: ExecutionContext) -> StopWordsOutput:
+        ctx.logger.info("Generating stop words list")
+        stop_words = [
+            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+            "have", "has", "had", "do", "does", "did", "will", "would", "could",
+            "should", "may", "might", "shall", "can", "need", "dare", "ought",
+            "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
+            "into", "through", "during", "before", "after", "and", "but", "or",
+            "nor", "not", "so", "yet", "both", "either", "neither", "each",
+            "every", "all", "any", "few", "more", "most", "other", "some",
+            "such", "no", "only", "own", "same", "than", "too", "very",
+            "just", "because", "it", "its", "this", "that", "these", "those",
+            "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
+            "she", "her", "they", "them", "their", "what", "which", "who",
+        ]
+        return StopWordsOutput(stop_words=stop_words)
+
+
+class ComputeWordStats(Task[AnalysisInput, WordStatsOutput]):
     """Count words, sentences, and find the most common words."""
 
-    name = "word_stats"
+    name = "compute_word_stats"
 
-    def run(self, input: TextInput, ctx: ExecutionContext) -> WordStatsOutput:
-        ctx.logger.info("Computing word statistics for '%s'", input.title)
-        words = re.findall(r"[a-zA-Z']+", input.text.lower())
-        sentences = [s.strip() for s in re.split(r"[.!?]+", input.text) if s.strip()]
-        meaningful = [w for w in words if w not in STOP_WORDS and len(w) > 2]
+    def run(self, input: AnalysisInput, ctx: ExecutionContext) -> WordStatsOutput:
+        text = input.content.text
+        stop_words = set(input.stop_words.stop_words)
+        ctx.logger.info("Computing word statistics for '%s'", input.content.title)
+        words = re.findall(r"[a-zA-Z']+", text.lower())
+        sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+        meaningful = [w for w in words if w not in stop_words and len(w) > 2]
         counter = Counter(meaningful)
 
         return WordStatsOutput(
@@ -120,15 +160,17 @@ class ComputeWordStats(Task[TextInput, WordStatsOutput]):
         )
 
 
-class ExtractKeywords(Task[TextInput, KeywordsOutput]):
+class ExtractKeywords(Task[AnalysisInput, KeywordsOutput]):
     """Extract keywords (top frequent non-stop words) and bigrams."""
 
-    name = "keywords"
+    name = "extract_keywords"
 
-    def run(self, input: TextInput, ctx: ExecutionContext) -> KeywordsOutput:
-        ctx.logger.info("Extracting keywords for '%s'", input.title)
-        words = re.findall(r"[a-zA-Z']+", input.text.lower())
-        meaningful = [w for w in words if w not in STOP_WORDS and len(w) > 2]
+    def run(self, input: AnalysisInput, ctx: ExecutionContext) -> KeywordsOutput:
+        text = input.content.text
+        stop_words = set(input.stop_words.stop_words)
+        ctx.logger.info("Extracting keywords for '%s'", input.content.title)
+        words = re.findall(r"[a-zA-Z']+", text.lower())
+        meaningful = [w for w in words if w not in stop_words and len(w) > 2]
 
         # Top keywords by frequency
         counter = Counter(meaningful)
@@ -143,12 +185,12 @@ class ExtractKeywords(Task[TextInput, KeywordsOutput]):
         return KeywordsOutput(keywords=keywords, bigrams=bigrams)
 
 
-class ScoreReadability(Task[TextInput, ReadabilityOutput]):
+class ScoreReadability(Task[TextContent, ReadabilityOutput]):
     """Compute a simplified Flesch reading ease score."""
 
-    name = "readability"
+    name = "score_readability"
 
-    def run(self, input: TextInput, ctx: ExecutionContext) -> ReadabilityOutput:
+    def run(self, input: TextContent, ctx: ExecutionContext) -> ReadabilityOutput:
         ctx.logger.info("Scoring readability for '%s'", input.title)
         words = re.findall(r"[a-zA-Z']+", input.text.lower())
         sentences = [s.strip() for s in re.split(r"[.!?]+", input.text) if s.strip()]
@@ -237,9 +279,17 @@ def main() -> None:
     # Build the DAG workflow
     workflow = (
         Workflow.builder(name="text_analysis")
-        .add_task(ComputeWordStats)                          # root (receives TextInput)
-        .add_task(ExtractKeywords)                           # root (receives TextInput)
-        .add_task(ScoreReadability)                          # root (receives TextInput)
+        .add_task(PrepareText)                               # root (receives TextInput)
+        .add_task(GenerateStopWords)                         # root (receives TextInput)
+        .add_task(ComputeWordStats, depends_on={             # fan-in
+            "content": PrepareText,
+            "stop_words": GenerateStopWords,
+        })
+        .add_task(ExtractKeywords, depends_on={              # fan-in
+            "content": PrepareText,
+            "stop_words": GenerateStopWords,
+        })
+        .add_task(ScoreReadability, depends_on=PrepareText)  # single dep
         .add_task(BuildReport, depends_on={                  # fan-in from all three
             "stats": ComputeWordStats,
             "keywords": ExtractKeywords,
