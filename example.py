@@ -12,7 +12,8 @@ depends only on PrepareText, and all merge into a final BuildReport.
 
 Run:
     source .venv/bin/activate
-    python example.py
+    python example.py           # Python API
+    python example.py --yaml    # YAML config
 """
 
 from __future__ import annotations
@@ -275,7 +276,39 @@ consistently ranking among the top programming languages worldwide.\
 """
 
 
-def main() -> None:
+def print_report(result: Job[TextInput], timing: TimingHook, workflow: Workflow) -> None:
+    """Print the analysis report, timings, and Mermaid diagram."""
+    report: AnalysisReport = result.result  # type: ignore[assignment]
+
+    print("=" * 60)
+    print(f"  {report.title} — Analysis Report")
+    print("=" * 60)
+    print(f"\n  {report.summary}\n")
+    print(f"  Words:            {report.word_count}")
+    print(f"  Sentences:        {report.sentence_count}")
+    print(f"  Avg word length:  {report.avg_word_length} chars")
+    print(f"  Flesch score:     {report.flesch_score}")
+    print(f"  Grade level:      {report.grade_level}")
+    print(f"\n  Top words:        {', '.join(report.top_words)}")
+    print(f"  Keywords:         {', '.join(report.keywords)}")
+    print(f"  Top bigrams:      {', '.join(report.bigrams)}")
+
+    print(f"\n  Job status:       {result.status}")
+    print(f"  Total duration:   {timing.job_duration:.4f}s")
+    print("  Task timings:")
+    for name, duration in timing.task_timings.items():
+        print(f"    {name:20s} {duration:.4f}s")
+    print()
+
+    # Print Mermaid diagram
+    print("Mermaid diagram:")
+    print("```mermaid")
+    print(workflow.to_mermaid(), end="")
+    print("```")
+
+
+def run_python_mode() -> None:
+    """Run the pipeline using the Python API."""
     # Build the DAG workflow
     workflow = (
         Workflow.builder(name="text_analysis")
@@ -311,35 +344,43 @@ def main() -> None:
     runner = Runner(hooks=[LoggingHook(), timing])
     result = runner.run(job, ctx=ctx)
 
-    # Print results
-    report = result.result
-    assert isinstance(report, AnalysisReport)
+    print_report(result, timing, workflow)
 
-    print("=" * 60)
-    print(f"  {report.title} — Analysis Report")
-    print("=" * 60)
-    print(f"\n  {report.summary}\n")
-    print(f"  Words:            {report.word_count}")
-    print(f"  Sentences:        {report.sentence_count}")
-    print(f"  Avg word length:  {report.avg_word_length} chars")
-    print(f"  Flesch score:     {report.flesch_score}")
-    print(f"  Grade level:      {report.grade_level}")
-    print(f"\n  Top words:        {', '.join(report.top_words)}")
-    print(f"  Keywords:         {', '.join(report.keywords)}")
-    print(f"  Top bigrams:      {', '.join(report.bigrams)}")
 
-    print(f"\n  Job status:       {result.status}")
-    print(f"  Total duration:   {timing.job_duration:.4f}s")
-    print("  Task timings:")
-    for name, duration in timing.task_timings.items():
-        print(f"    {name:20s} {duration:.4f}s")
-    print()
+def run_yaml_mode() -> None:
+    """Run the pipeline from the YAML config file."""
+    from pathlib import Path
 
-    # Print Mermaid diagram
-    print("Mermaid diagram:")
-    print("```mermaid")
-    print(workflow.to_mermaid(), end="")
-    print("```")
+    from workflow_runner.yaml_config import load_workflow_from_yaml
+
+    yaml_path = Path(__file__).parent / "example.yaml"
+    loaded = load_workflow_from_yaml(yaml_path)
+    result = loaded.run()
+
+    # Find TimingHook from the runner's hook list
+    timing = next(
+        (h for h in loaded.runner.hooks if isinstance(h, TimingHook)),
+        None,
+    )
+    assert timing is not None, "TimingHook not found in loaded runner hooks"
+
+    print_report(result, timing, loaded.workflow)
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Text Analysis Pipeline example")
+    parser.add_argument(
+        "--yaml", action="store_true",
+        help="Load workflow from example.yaml instead of the Python API",
+    )
+    args = parser.parse_args()
+
+    if args.yaml:
+        run_yaml_mode()
+    else:
+        run_python_mode()
 
 
 if __name__ == "__main__":

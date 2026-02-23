@@ -1,0 +1,48 @@
+# Text Analysis Pipeline — YAML configuration
+# Equivalent to the Python-defined DAG in example.py
+#
+# Run:
+#   python example.py --yaml
+
+workflow:
+  name: text_analysis
+  tasks:
+    - task: example.PrepareText
+    - task: example.GenerateStopWords
+    - task: example.ComputeWordStats
+      depends_on:
+        content: example.PrepareText
+        stop_words: example.GenerateStopWords
+    - task: example.ExtractKeywords
+      depends_on:
+        content: example.PrepareText
+        stop_words: example.GenerateStopWords
+    - task: example.ScoreReadability
+      depends_on: example.PrepareText
+    - task: example.BuildReport
+      depends_on:
+        stats: example.ComputeWordStats
+        keywords: example.ExtractKeywords
+        readability: example.ScoreReadability
+
+runner:
+  hooks:
+    - hook: workflow_runner.hooks.logging.LoggingHook
+    - hook: workflow_runner.hooks.timing.TimingHook
+
+context:
+  services:
+    title: "Python Overview"
+
+input:
+  text: >
+    Python is a high-level programming language known for its clear syntax and
+    readability. Python supports multiple programming paradigms, including
+    structured, object-oriented, and functional programming. Its comprehensive
+    standard library and active community make Python an excellent choice for
+    web development, data science, artificial intelligence, and automation.
+    Python's design philosophy emphasizes code readability and simplicity,
+    allowing developers to express concepts in fewer lines of code compared to
+    languages like C++ or Java. The language continues to grow in popularity,
+    consistently ranking among the top programming languages worldwide.
+  title: "Python Overview"
