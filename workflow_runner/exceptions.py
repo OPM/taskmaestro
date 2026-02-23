@@ -31,3 +31,7 @@ class TaskOutputTypeError(TaskExecutionError):
 
 class TaskTimeoutError(TaskExecutionError):
     """Raised when a task exceeds its timeout_seconds."""
+
+
+class ConfigLoadError(WorkflowRunnerError):
+    """Raised when YAML config loading fails (parse errors, import failures, validation)."""

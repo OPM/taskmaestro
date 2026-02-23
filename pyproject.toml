@@ -9,6 +9,7 @@ description = "A Python 3.12+ library for defining and executing typed DAG task 
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0,<3.0",
+    "pyyaml>=6.0,<7.0",
 ]
 
 [project.optional-dependencies]
@@ -17,6 +18,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    "types-PyYAML>=6.0",
 ]
 
 [tool.ruff]
