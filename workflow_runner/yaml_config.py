@@ -26,7 +26,7 @@ class TaskConfig(BaseModel):
     """A single task entry in the YAML workflow config."""
 
     task: str
-    depends_on: str | dict[str, str] | None = None
+    depends_on: str | list[str] | dict[str, Any] | None = None
 
 
 class HookConfig(BaseModel):
@@ -203,15 +203,45 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
                         f"Dependency '{deps}' for task '{task_config.task}' not found"
                     )
                 builder.add_task(cls, depends_on=task_classes[deps])
+            elif isinstance(deps, list):
+                # Field-ref: [task_path, field_name]
+                if len(deps) != 2 or not all(isinstance(e, str) for e in deps):
+                    raise ConfigLoadError(
+                        f"List depends_on must be [task_path, field_name], "
+                        f"got {deps!r} for task '{task_config.task}'"
+                    )
+                upstream_path, field_name = deps
+                if upstream_path not in task_classes:
+                    raise ConfigLoadError(
+                        f"Dependency '{upstream_path}' for task '{task_config.task}' not found"
+                    )
+                builder.add_task(cls, depends_on=(task_classes[upstream_path], field_name))
             elif isinstance(deps, dict):
-                fan_in: dict[str, type[Task[Any, Any]]] = {}
-                for field_name, upstream_path in deps.items():
-                    if upstream_path not in task_classes:
-                        raise ConfigLoadError(
-                            f"Fan-in dependency '{upstream_path}' for field "
-                            f"'{field_name}' on task '{task_config.task}' not found"
-                        )
-                    fan_in[field_name] = task_classes[upstream_path]
+                fan_in: dict[str, type[Task[Any, Any]] | tuple[type[Task[Any, Any]], str]] = {}
+                for field_name, upstream_ref in deps.items():
+                    if isinstance(upstream_ref, list):
+                        if len(upstream_ref) != 2 or not all(
+                            isinstance(e, str) for e in upstream_ref
+                        ):
+                            raise ConfigLoadError(
+                                f"List dep must be [task_path, field_name], "
+                                f"got {upstream_ref!r} for field '{field_name}' "
+                                f"on task '{task_config.task}'"
+                            )
+                        up_path, up_field = upstream_ref
+                        if up_path not in task_classes:
+                            raise ConfigLoadError(
+                                f"Fan-in dependency '{up_path}' for field "
+                                f"'{field_name}' on task '{task_config.task}' not found"
+                            )
+                        fan_in[field_name] = (task_classes[up_path], up_field)
+                    else:
+                        if upstream_ref not in task_classes:
+                            raise ConfigLoadError(
+                                f"Fan-in dependency '{upstream_ref}' for field "
+                                f"'{field_name}' on task '{task_config.task}' not found"
+                            )
+                        fan_in[field_name] = task_classes[upstream_ref]
                 builder.add_task(cls, depends_on=fan_in)
         try:
             workflow = builder.build()

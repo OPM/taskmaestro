@@ -4,6 +4,10 @@ This pipeline takes raw text, fans out to PrepareText and GenerateStopWords,
 then fans in to ComputeWordStats and ExtractKeywords, while ScoreReadability
 depends only on PrepareText, and all merge into a final BuildReport.
 
+ExtractKeywords uses inline Inputs/Outputs port declarations and produces
+two named outputs (.keywords, .num_words_removed) that are routed
+independently to BuildReport via output field routing.
+
                   ┌── PrepareText ───────── ScoreReadability ──┐
     TextInput ──►│                 ↘              ↘            │
                   │           ComputeWordStats  ExtractKeywords ──► BuildReport
@@ -83,11 +87,16 @@ class ReadabilityOutput(BaseModel):
 
 
 class ReportInput(BaseModel):
-    """Fan-in: each field sourced from a different upstream task."""
+    """Fan-in: each field sourced from a different upstream task.
+
+    ``keywords`` and ``num_words_removed`` are routed from individual
+    fields of ExtractKeywords.Outputs via output field routing.
+    """
 
     stats: WordStatsOutput
     keywords: KeywordsOutput
     readability: ReadabilityOutput
+    num_words_removed: int
 
 
 class AnalysisReport(BaseModel):
@@ -96,6 +105,7 @@ class AnalysisReport(BaseModel):
     word_count: int
     sentence_count: int
     avg_word_length: float
+    num_words_removed: int
     top_words: list[str]
     keywords: list[str]
     bigrams: list[str]
@@ -162,17 +172,32 @@ class ComputeWordStats(Task[AnalysisInput, WordStatsOutput]):
         )
 
 
-class ExtractKeywords(Task[AnalysisInput, KeywordsOutput]):
-    """Extract keywords (top frequent non-stop words) and bigrams."""
+class ExtractKeywords(Task):  # type: ignore[type-arg]
+    """Extract keywords (top frequent non-stop words) and bigrams.
+
+    Uses inline Inputs/Outputs inner classes instead of Task[I, O] generics
+    to demonstrate the named-ports API.  The Outputs model carries both the
+    KeywordsOutput and a ``num_words_removed`` counter that is routed
+    independently to downstream tasks via output field routing.
+    """
 
     name = "extract_keywords"
 
-    def run(self, input: AnalysisInput, ctx: ExecutionContext) -> KeywordsOutput:
+    class Inputs(BaseModel):
+        content: TextContent
+        stop_words: StopWordsOutput
+
+    class Outputs(BaseModel):
+        keywords: KeywordsOutput
+        num_words_removed: int
+
+    def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
         text = input.content.text
         stop_words = set(input.stop_words.stop_words)
         ctx.logger.info("Extracting keywords for '%s'", input.content.title)
         words = re.findall(r"[a-zA-Z']+", text.lower())
         meaningful = [w for w in words if w not in stop_words and len(w) > 2]
+        num_words_removed = len(words) - len(meaningful)
 
         # Top keywords by frequency
         counter = Counter(meaningful)
@@ -184,7 +209,10 @@ class ExtractKeywords(Task[AnalysisInput, KeywordsOutput]):
         )
         bigrams = [bg for bg, _ in bigram_counter.most_common(5)]
 
-        return KeywordsOutput(keywords=keywords, bigrams=bigrams)
+        return self.Outputs(
+            keywords=KeywordsOutput(keywords=keywords, bigrams=bigrams),
+            num_words_removed=num_words_removed,
+        )
 
 
 class ScoreReadability(Task[TextContent, ReadabilityOutput]):
@@ -252,6 +280,7 @@ class BuildReport(Task[ReportInput, AnalysisReport]):
             word_count=input.stats.word_count,
             sentence_count=input.stats.sentence_count,
             avg_word_length=round(input.stats.avg_word_length, 2),
+            num_words_removed=input.num_words_removed,
             top_words=[w for w, _ in input.stats.most_common],
             keywords=input.keywords.keywords,
             bigrams=input.keywords.bigrams,
@@ -286,6 +315,7 @@ def print_report(result: Job[TextInput], timing: TimingHook, workflow: Workflow)
     print("=" * 60)
     print(f"\n  {report.summary}\n")
     print(f"  Words:            {report.word_count}")
+    print(f"  Stop words removed: {report.num_words_removed}")
     print(f"  Sentences:        {report.sentence_count}")
     print(f"  Avg word length:  {report.avg_word_length} chars")
     print(f"  Flesch score:     {report.flesch_score}")
@@ -326,8 +356,9 @@ def run_python_mode() -> None:
         .add_task(ScoreReadability, depends_on=PrepareText)  # single dep
         .add_task(BuildReport, depends_on={                  # fan-in from all three
             "stats": ComputeWordStats,
-            "keywords": ExtractKeywords,
+            "keywords": (ExtractKeywords, "keywords"),           # output field routing
             "readability": ScoreReadability,
+            "num_words_removed": (ExtractKeywords, "num_words_removed"),  # output field routing
         })
         .build()
     )

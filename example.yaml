@@ -22,8 +22,9 @@ workflow:
     - task: example.BuildReport
       depends_on:
         stats: example.ComputeWordStats
-        keywords: example.ExtractKeywords
+        keywords: [example.ExtractKeywords, keywords]                    # output field routing
         readability: example.ScoreReadability
+        num_words_removed: [example.ExtractKeywords, num_words_removed]  # output field routing
 
 runner:
   hooks:

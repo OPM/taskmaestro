@@ -64,12 +64,18 @@ class Runner:
                     task_input = job.config
                 elif isinstance(deps, str):
                     task_input = outputs[deps]
+                elif isinstance(deps, tuple):
+                    upstream_name, field_name = deps
+                    task_input = getattr(outputs[upstream_name], field_name)
                 elif isinstance(deps, dict):
                     input_type = get_input_type(task_cls)
-                    field_values = {
-                        field_name: outputs[upstream_name]
-                        for field_name, upstream_name in deps.items()
-                    }
+                    field_values: dict[str, object] = {}
+                    for fname, upstream_ref in deps.items():
+                        if isinstance(upstream_ref, tuple):
+                            up_name, up_field = upstream_ref
+                            field_values[fname] = getattr(outputs[up_name], up_field)
+                        else:
+                            field_values[fname] = outputs[upstream_ref]
                     task_input = input_type(**field_values)
                 else:
                     task_input = job.config  # pragma: no cover

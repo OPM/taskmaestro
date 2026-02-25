@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Union
 
 from pydantic import BaseModel
 
@@ -12,6 +12,32 @@ from workflow_runner.exceptions import (
     WorkflowDefinitionError,
 )
 from workflow_runner.task import Task, get_input_type, get_output_type
+
+# Stored dependency types after name resolution:
+#   None              — root task
+#   str               — single upstream (whole output)
+#   tuple[str, str]   — single upstream, specific field
+#   dict[str, str | tuple[str, str]]  — fan-in (values may be field refs)
+DepValue = Union[str, "tuple[str, str]"]
+StoredDeps = Union[dict[str, DepValue], str, "tuple[str, str]", None]
+
+
+def _extract_upstream_names(deps: StoredDeps) -> set[str]:
+    """Return the set of upstream task names referenced by *deps*."""
+    if deps is None:
+        return set()
+    if isinstance(deps, str):
+        return {deps}
+    if isinstance(deps, tuple):
+        return {deps[0]}
+    # dict
+    names: set[str] = set()
+    for v in deps.values():
+        if isinstance(v, tuple):
+            names.add(v[0])
+        else:
+            names.add(v)
+    return names
 
 
 class Workflow:
@@ -30,7 +56,7 @@ class Workflow:
         """
         self.name = name
         self._tasks: dict[str, type[Task[Any, Any]]] = {}
-        self._dependencies: dict[str, dict[str, str] | str | None] = {}
+        self._dependencies: dict[str, StoredDeps] = {}
         self._result_task_name: str | None = None
 
         if tasks:
@@ -63,16 +89,9 @@ class Workflow:
         adjacency: dict[str, list[str]] = {name: [] for name in self._tasks}
 
         for name, deps in self._dependencies.items():
-            if deps is None:
-                continue
-            if isinstance(deps, str):
+            for upstream in _extract_upstream_names(deps):
                 in_degree[name] += 1
-                adjacency[deps].append(name)
-            elif isinstance(deps, dict):
-                upstream_names = set(deps.values())
-                for upstream in upstream_names:
-                    in_degree[name] += 1
-                    adjacency[upstream].append(name)
+                adjacency[upstream].append(name)
 
         queue = [name for name, deg in in_degree.items() if deg == 0]
         result: list[type[Task[Any, Any]]] = []
@@ -95,7 +114,7 @@ class Workflow:
             raise WorkflowDefinitionError("No result task set")
         return self._tasks[self._result_task_name]
 
-    def get_dependencies(self, task_name: str) -> dict[str, str] | str | None:
+    def get_dependencies(self, task_name: str) -> StoredDeps:
         """Return the dependency spec for a task."""
         return self._dependencies[task_name]
 
@@ -119,13 +138,8 @@ class Workflow:
         def _build_adjacency() -> dict[str, list[str]]:
             adj: dict[str, list[str]] = {name: [] for name in self._tasks}
             for name, deps in self._dependencies.items():
-                if deps is None:
-                    continue
-                if isinstance(deps, str):
-                    adj[deps].append(name)
-                elif isinstance(deps, dict):
-                    for upstream in set(deps.values()):
-                        adj[upstream].append(name)
+                for upstream in _extract_upstream_names(deps):
+                    adj[upstream].append(name)
             return adj
 
         adjacency = _build_adjacency()
@@ -151,7 +165,7 @@ class Workflow:
                 # Root task — validated at Job creation time
                 continue
             elif isinstance(deps, str):
-                # Single dependency
+                # Single dependency (whole output)
                 upstream_cls = self._tasks[deps]
                 upstream_output = get_output_type(upstream_cls)
                 downstream_input = get_input_type(task_cls)
@@ -159,6 +173,25 @@ class Workflow:
                     raise WorkflowDefinitionError(
                         f"Type mismatch: {upstream_cls.name} outputs "
                         f"{upstream_output.__name__} but {task_cls.name} expects "
+                        f"{downstream_input.__name__}"
+                    )
+            elif isinstance(deps, tuple):
+                # Single dependency, specific output field
+                upstream_name, field_name = deps
+                upstream_cls = self._tasks[upstream_name]
+                upstream_output = get_output_type(upstream_cls)
+                upstream_fields = upstream_output.model_fields
+                if field_name not in upstream_fields:
+                    raise WorkflowDefinitionError(
+                        f"Field '{field_name}' not found on "
+                        f"{upstream_output.__name__} (output of {upstream_cls.name})"
+                    )
+                field_annotation = upstream_fields[field_name].annotation
+                downstream_input = get_input_type(task_cls)
+                if field_annotation is not None and downstream_input is not field_annotation:
+                    raise WorkflowDefinitionError(
+                        f"Type mismatch: {upstream_cls.name}.{field_name} is "
+                        f"{field_annotation.__name__} but {task_cls.name} expects "
                         f"{downstream_input.__name__}"
                     )
             elif isinstance(deps, dict):
@@ -170,20 +203,34 @@ class Workflow:
                     )
                 model_fields = downstream_input.model_fields
                 # Check that every mapped field exists and types match
-                for field_name, upstream_name in deps.items():
+                for field_name, upstream_ref in deps.items():
                     if field_name not in model_fields:
                         raise WorkflowDefinitionError(
                             f"Fan-in field '{field_name}' not found on {downstream_input.__name__}"
                         )
-                    upstream_cls = self._tasks[upstream_name]
-                    upstream_output = get_output_type(upstream_cls)
+                    if isinstance(upstream_ref, tuple):
+                        up_name, up_field = upstream_ref
+                        up_cls = self._tasks[up_name]
+                        up_output = get_output_type(up_cls)
+                        up_fields = up_output.model_fields
+                        if up_field not in up_fields:
+                            raise WorkflowDefinitionError(
+                                f"Field '{up_field}' not found on "
+                                f"{up_output.__name__} (output of {up_cls.name})"
+                            )
+                        resolved_type = up_fields[up_field].annotation
+                    else:
+                        up_cls = self._tasks[upstream_ref]
+                        resolved_type = get_output_type(up_cls)
                     field_annotation = model_fields[field_name].annotation
-                    if field_annotation is not None and not issubclass(
-                        upstream_output, field_annotation
+                    if (
+                        field_annotation is not None
+                        and resolved_type is not None
+                        and not issubclass(resolved_type, field_annotation)
                     ):
                         raise WorkflowDefinitionError(
-                            f"Fan-in type mismatch: {upstream_cls.name} outputs "
-                            f"{upstream_output.__name__} but field '{field_name}' "
+                            f"Fan-in type mismatch: {up_cls.name} outputs "
+                            f"{resolved_type.__name__} but field '{field_name}' "
                             f"on {downstream_input.__name__} expects "
                             f"{field_annotation.__name__}"
                         )
@@ -218,10 +265,7 @@ class Workflow:
         """Return task names with no downstream dependents."""
         has_dependents: set[str] = set()
         for deps in self._dependencies.values():
-            if isinstance(deps, str):
-                has_dependents.add(deps)
-            elif isinstance(deps, dict):
-                has_dependents.update(deps.values())
+            has_dependents.update(_extract_upstream_names(deps))
         return [name for name in self._tasks if name not in has_dependents]
 
 
@@ -244,9 +288,22 @@ class WorkflowBuilder:
         self,
         task_cls: type[Task[Any, Any]],
         *,
-        depends_on: type[Task[Any, Any]] | dict[str, type[Task[Any, Any]]] | None = None,
+        depends_on: (
+            type[Task[Any, Any]]
+            | tuple[type[Task[Any, Any]], str]
+            | dict[str, type[Task[Any, Any]] | tuple[type[Task[Any, Any]], str]]
+            | None
+        ) = None,
     ) -> WorkflowBuilder:
-        """Add a task to the DAG. Returns self for chaining."""
+        """Add a task to the DAG. Returns self for chaining.
+
+        ``depends_on`` accepts:
+        - ``None`` — root task (no upstream)
+        - ``TaskClass`` — single upstream, whole output
+        - ``(TaskClass, "field")`` — single upstream, specific output field
+        - ``{"field": TaskClass, ...}`` — fan-in, whole outputs
+        - ``{"field": (TaskClass, "f"), ...}`` — fan-in with field routing
+        """
         wf = self._workflow
         if task_cls.name in wf._tasks:
             raise WorkflowDefinitionError(f"Duplicate task name '{task_cls.name}'")
@@ -254,10 +311,18 @@ class WorkflowBuilder:
 
         if depends_on is None:
             wf._dependencies[task_cls.name] = None
+        elif isinstance(depends_on, tuple):
+            dep_cls, field = depends_on
+            wf._dependencies[task_cls.name] = (dep_cls.name, field)
         elif isinstance(depends_on, dict):
-            wf._dependencies[task_cls.name] = {
-                field: dep.name for field, dep in depends_on.items()
-            }
+            resolved: dict[str, DepValue] = {}
+            for field, dep in depends_on.items():
+                if isinstance(dep, tuple):
+                    dep_cls, dep_field = dep
+                    resolved[field] = (dep_cls.name, dep_field)
+                else:
+                    resolved[field] = dep.name
+            wf._dependencies[task_cls.name] = resolved
         else:
             wf._dependencies[task_cls.name] = depends_on.name
 

@@ -139,6 +139,76 @@ class TestFanInDAG:
             assert "-->|" in line
 
 
+class TestFieldRouting:
+    """Tests for Mermaid edges with output field routing."""
+
+    def test_tuple_dep_edge_label(self) -> None:
+        from pydantic import BaseModel
+
+        from tests.conftest import Double, NumberInput, NumberOutput
+
+        class MultiOut(BaseModel):
+            stats: NumberOutput
+            other: NumberOutput
+
+        class Producer(Task[NumberInput, MultiOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MultiOut:
+                return MultiOut(stats=NumberOutput(value=0), other=NumberOutput(value=0))
+
+        wf = (
+            Workflow.builder("field_viz")
+            .add_task(Producer)
+            .add_task(Double, depends_on=(Producer, "stats"))
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        # Edge should show .stats: NumberOutput
+        assert "producer -->|.stats: NumberOutput| double" in result
+
+    def test_fan_in_with_field_ref_edge_label(self) -> None:
+        from pydantic import BaseModel
+
+        from tests.conftest import (
+            AddOneB,
+            FanInTask,
+            NumberInput,
+            NumberOutput,
+        )
+
+        class MultiOut(BaseModel):
+            a: NumberOutput
+            b: NumberOutput
+
+        class Producer(Task[NumberInput, MultiOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MultiOut:
+                return MultiOut(a=NumberOutput(value=0), b=NumberOutput(value=0))
+
+        wf = (
+            Workflow.builder("mixed_viz")
+            .add_task(Producer)
+            .add_task(AddOneB)
+            .add_task(
+                FanInTask,
+                depends_on={
+                    "a": (Producer, "a"),
+                    "b": AddOneB,
+                },
+            )
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        # Field-ref edge: "a: .a: NumberOutput"
+        assert "producer -->|a: .a: NumberOutput| fan_in_task" in result
+        # Whole-output edge: "b: NumberOutput"
+        assert "add_one_b -->|b: NumberOutput| fan_in_task" in result
+
+
 class TestSingleTask:
     def test_single_task_start_and_end_edges(self) -> None:
         wf = Workflow("single", [WordStats])

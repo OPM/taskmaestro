@@ -35,12 +35,26 @@ class Task(ABC, Generic[I, O]):
 
 
 def get_input_type(task_cls: type[Task[Any, Any]]) -> type[BaseModel]:
-    """Extract the concrete input type (I) from a Task subclass."""
+    """Extract the concrete input type (I) from a Task subclass.
+
+    Checks for an inner ``Inputs`` class first, then falls back to
+    generic type argument introspection.
+    """
+    inner: type[Any] | None = getattr(task_cls, "Inputs", None)
+    if inner is not None and isinstance(inner, type) and issubclass(inner, BaseModel):
+        return inner
     return _get_type_arg(task_cls, 0)
 
 
 def get_output_type(task_cls: type[Task[Any, Any]]) -> type[BaseModel]:
-    """Extract the concrete output type (O) from a Task subclass."""
+    """Extract the concrete output type (O) from a Task subclass.
+
+    Checks for an inner ``Outputs`` class first, then falls back to
+    generic type argument introspection.
+    """
+    inner: type[Any] | None = getattr(task_cls, "Outputs", None)
+    if inner is not None and isinstance(inner, type) and issubclass(inner, BaseModel):
+        return inner
     return _get_type_arg(task_cls, 1)
 
 

@@ -99,3 +99,106 @@ class TestTypeIntrospection:
 
         assert get_input_type(Stringify) is NumberOutput
         assert get_output_type(Stringify) is StringOutput
+
+
+class TestInlinePorts:
+    """Tests for Feature 1: inner Inputs/Outputs class detection."""
+
+    def test_inner_inputs_resolved(self) -> None:
+        class MyTask(Task):  # type: ignore[type-arg]
+            name = "my_task"
+
+            class Inputs(BaseModel):
+                x: int
+
+            class Outputs(BaseModel):
+                y: int
+
+            def run(self, input: MyTask.Inputs, ctx: ExecutionContext) -> MyTask.Outputs:
+                return self.Outputs(y=input.x + 1)
+
+        assert get_input_type(MyTask) is MyTask.Inputs
+
+    def test_inner_outputs_resolved(self) -> None:
+        class MyTask(Task):  # type: ignore[type-arg]
+            name = "my_task"
+
+            class Inputs(BaseModel):
+                x: int
+
+            class Outputs(BaseModel):
+                y: int
+
+            def run(self, input: MyTask.Inputs, ctx: ExecutionContext) -> MyTask.Outputs:
+                return self.Outputs(y=input.x + 1)
+
+        assert get_output_type(MyTask) is MyTask.Outputs
+
+    def test_inner_classes_take_precedence_over_generics(self) -> None:
+        """When both generics and inner classes are present, inner classes win."""
+
+        class InnerIn(BaseModel):
+            a: str
+
+        class InnerOut(BaseModel):
+            b: str
+
+        class BothTask(Task[NumberInput, NumberOutput]):
+            name = "both_task"
+
+            Inputs = InnerIn
+            Outputs = InnerOut
+
+            def run(self, input: InnerIn, ctx: ExecutionContext) -> InnerOut:
+                return InnerOut(b=input.a)
+
+        assert get_input_type(BothTask) is InnerIn
+        assert get_output_type(BothTask) is InnerOut
+
+    def test_no_generics_no_inner_raises(self) -> None:
+        """Task with neither generics nor inner classes raises TypeError."""
+
+        class EmptyTask(Task):  # type: ignore[type-arg]
+            name = "empty"
+
+            def run(self, input: BaseModel, ctx: ExecutionContext) -> BaseModel:
+                return BaseModel()
+
+        with __import__("pytest").raises(TypeError, match="Cannot resolve type argument"):
+            get_input_type(EmptyTask)
+
+    def test_inline_task_in_workflow_end_to_end(self) -> None:
+        """An inline-ports task validates and runs in a workflow."""
+
+        class Intermediate(BaseModel):
+            val: int
+
+        class Source(Task):  # type: ignore[type-arg]
+            name = "inline_source"
+
+            class Inputs(BaseModel):
+                val: int
+
+            Outputs = Intermediate
+
+            def run(self, input: Source.Inputs, ctx: ExecutionContext) -> Intermediate:
+                return Intermediate(val=input.val + 1)
+
+        class Sink(Task):  # type: ignore[type-arg]
+            name = "inline_sink"
+
+            Inputs = Intermediate
+
+            class Outputs(BaseModel):
+                text: str
+
+            def run(self, input: Intermediate, ctx: ExecutionContext) -> Sink.Outputs:
+                return self.Outputs(text=str(input.val))
+
+        from workflow_runner import Job, Runner, Workflow
+
+        wf = Workflow("inline_test", tasks=[Source, Sink])
+        job = Job(workflow=wf, config=Source.Inputs(val=10))
+        result = Runner().run(job)
+        assert result.result is not None
+        assert result.result.text == "11"  # type: ignore[attr-defined]

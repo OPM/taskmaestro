@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import BaseModel
 
 from tests.conftest import (
     AddOne,
@@ -14,6 +15,7 @@ from tests.conftest import (
     NumberOutput,
     SlowTask,
     Stringify,
+    StringOutput,
     WrongOutputTask,
 )
 from workflow_runner import (
@@ -130,6 +132,96 @@ class TestDAGExecution:
         assert result.status == JobStatus.COMPLETED
         assert result.result is not None
         assert result.result.text == "4"  # type: ignore[attr-defined]
+
+
+class TestFieldRoutingExecution:
+    """Tests for output field routing in Runner."""
+
+    def test_single_field_ref_execution(self, ctx: ExecutionContext) -> None:
+        class MultiOut(BaseModel):
+            stats: NumberOutput
+            other: NumberOutput
+
+        class Producer(Task[NumberInput, MultiOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MultiOut:
+                return MultiOut(
+                    stats=NumberOutput(value=input.value * 10),
+                    other=NumberOutput(value=input.value * 100),
+                )
+
+        wf = (
+            Workflow.builder("field_exec")
+            .add_task(Producer)
+            .add_task(Double, depends_on=(Producer, "stats"))
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=3))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result is not None
+        # Producer.stats = 30, Double doubles it = 60
+        assert result.result.value == 60  # type: ignore[attr-defined]
+
+    def test_dual_fan_out_field_routing(self, ctx: ExecutionContext) -> None:
+        class DualOut(BaseModel):
+            num: NumberOutput
+            text: StringOutput
+
+        class DualProducer(Task[NumberInput, DualOut]):
+            name = "dual_producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> DualOut:
+                return DualOut(
+                    num=NumberOutput(value=input.value),
+                    text=StringOutput(text=str(input.value)),
+                )
+
+        wf = (
+            Workflow.builder("dual_fan", result_task=Stringify)
+            .add_task(DualProducer)
+            .add_task(Double, depends_on=(DualProducer, "num"))
+            .add_task(Stringify, depends_on=Double)
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=5))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.text == "10"  # type: ignore[union-attr]
+
+    def test_mixed_fan_in_field_routing(self, ctx: ExecutionContext) -> None:
+        class MixedOut(BaseModel):
+            a: NumberOutput
+            b: NumberOutput
+
+        class MixedProducer(Task[NumberInput, MixedOut]):
+            name = "mixed_producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MixedOut:
+                return MixedOut(
+                    a=NumberOutput(value=input.value),
+                    b=NumberOutput(value=input.value + 100),
+                )
+
+        wf = (
+            Workflow.builder("mixed")
+            .add_task(MixedProducer)
+            .add_task(AddOneB)
+            .add_task(
+                FanInTask,
+                depends_on={
+                    "a": (MixedProducer, "a"),
+                    "b": AddOneB,
+                },
+            )
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=5))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        # Producer.a = 5, AddOneB = 6, total = 11
+        assert result.result.total == 11  # type: ignore[union-attr]
 
 
 class TestTimeouts:

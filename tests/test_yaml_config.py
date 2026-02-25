@@ -491,6 +491,89 @@ input:
 # ============================================================
 
 
+class TestYamlFieldRouting:
+    """Tests for YAML list-form depends_on (field routing)."""
+
+    def test_list_depends_on_end_to_end(self, tmp_path: Path) -> None:
+        """Field routing via list-form depends_on works end-to-end."""
+        yaml_content = f"""\
+workflow:
+  name: yaml_field_ref
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.UpperText
+input:
+  text: hello
+"""
+        path = _write_yaml(tmp_path, yaml_content)
+        loaded = load_workflow_from_yaml(path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.length == 5  # type: ignore[union-attr]
+
+    def test_dict_with_list_field_ref(self, tmp_path: Path) -> None:
+        """Fan-in with list-form field refs in YAML dict."""
+        yaml_content = f"""\
+workflow:
+  name: yaml_mixed
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.CombineResults
+      depends_on:
+        reversed: {THIS_MODULE}.ReverseText
+        length: {THIS_MODULE}.TextLength
+input:
+  text: hello
+"""
+        path = _write_yaml(tmp_path, yaml_content)
+        loaded = load_workflow_from_yaml(path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert "OLLEH" in result.result.summary  # type: ignore[union-attr]
+
+    def test_invalid_list_length_raises(self, tmp_path: Path) -> None:
+        """A list with != 2 elements raises ConfigLoadError."""
+        yaml_content = f"""\
+workflow:
+  name: bad
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on:
+        - {THIS_MODULE}.UpperText
+        - text
+        - extra
+input:
+  text: hello
+"""
+        path = _write_yaml(tmp_path, yaml_content)
+        with pytest.raises(ConfigLoadError, match="List depends_on must be"):
+            load_workflow_from_yaml(path)
+
+    def test_list_dep_not_found_raises(self, tmp_path: Path) -> None:
+        """List-form depends_on with unknown task raises ConfigLoadError."""
+        yaml_content = f"""\
+workflow:
+  name: bad
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on:
+        - nonexistent.module.Task
+        - text
+input:
+  text: hello
+"""
+        path = _write_yaml(tmp_path, yaml_content)
+        with pytest.raises(ConfigLoadError, match="not found"):
+            load_workflow_from_yaml(path)
+
+
 class TestRunWorkflowFromYaml:
     def test_convenience_function(self, tmp_path: Path) -> None:
         yaml_content = f"""\
