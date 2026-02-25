@@ -400,6 +400,14 @@ class TestOutputFieldRouting:
         assert deps == ("producer", "stats")
 
 
+class TestResultTaskNotSet:
+    def test_result_task_not_set_raises(self) -> None:
+        """Accessing result_task on a workflow with no result task raises."""
+        wf = Workflow(name="empty")
+        with pytest.raises(WorkflowDefinitionError, match="No result task set"):
+            _ = wf.result_task
+
+
 class TestGetDependencies:
     def test_root_task_deps_none(self) -> None:
         wf = Workflow(name="test", tasks=[AddOne, Double])

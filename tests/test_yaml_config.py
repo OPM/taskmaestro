@@ -73,6 +73,34 @@ class CombineResults(Task[FanInInput, FanInOutput]):
         return FanInOutput(summary=f"{input.reversed.text} ({input.length.length} chars)")
 
 
+class WrappedOutput(BaseModel):
+    inner: TextOutput
+    count: int
+
+
+class WrapText(Task[TextInput, WrappedOutput]):
+    name = "wrap_text"
+
+    def run(self, input: TextInput, ctx: ExecutionContext) -> WrappedOutput:
+        return WrappedOutput(inner=TextOutput(text=input.text.upper()), count=len(input.text))
+
+
+class FieldFanInInput(BaseModel):
+    inner: TextOutput
+    length: LengthOutput
+
+
+class FieldFanInOutput(BaseModel):
+    summary: str
+
+
+class FieldFanInTask(Task[FieldFanInInput, FieldFanInOutput]):
+    name = "field_fan_in"
+
+    def run(self, input: FieldFanInInput, ctx: ExecutionContext) -> FieldFanInOutput:
+        return FieldFanInOutput(summary=f"{input.inner.text} ({input.length.length} chars)")
+
+
 THIS_MODULE = "tests.test_yaml_config"
 
 
@@ -523,6 +551,151 @@ runner:
         with pytest.raises(ConfigLoadError, match="Cannot instantiate hook"):
             load_workflow_from_yaml(wf_path, in_path)
 
+    def test_workflow_yaml_not_a_mapping(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(tmp_path, "- item1\n- item2\n")
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="must contain a mapping"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_schema_validation_error(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(tmp_path, "workflow:\n  name: test\n")
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="YAML schema validation error"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_list_depends_on_field_routing(self, tmp_path: Path) -> None:
+        """List-form depends_on for single-upstream field routing in DAG mode."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: list_field_ref
+  tasks:
+    - task: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on:
+        - {THIS_MODULE}.WrapText
+        - inner
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.text == "OLLEH"  # type: ignore[union-attr]
+
+    def test_dict_fan_in_with_list_field_ref(self, tmp_path: Path) -> None:
+        """Dict depends_on with list-form field refs (fan-in + field routing)."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: dict_list_ref
+  tasks:
+    - task: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.TextLength
+      depends_on:
+        - {THIS_MODULE}.WrapText
+        - inner
+    - task: {THIS_MODULE}.FieldFanInTask
+      depends_on:
+        inner:
+          - {THIS_MODULE}.WrapText
+          - inner
+        length: {THIS_MODULE}.TextLength
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert "HELLO" in result.result.summary  # type: ignore[union-attr]
+
+    def test_dict_fan_in_list_ref_invalid_length(self, tmp_path: Path) -> None:
+        """List field ref in dict fan-in with != 2 elements raises ConfigLoadError."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad
+  tasks:
+    - task: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.FieldFanInTask
+      depends_on:
+        inner:
+          - {THIS_MODULE}.WrapText
+          - inner
+          - extra
+        length: {THIS_MODULE}.TextLength
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="List dep must be"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_dict_fan_in_list_ref_not_found(self, tmp_path: Path) -> None:
+        """List field ref in dict fan-in with unknown task raises ConfigLoadError."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad
+  tasks:
+    - task: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.FieldFanInTask
+      depends_on:
+        inner:
+          - nonexistent.module.Task
+          - inner
+        length: {THIS_MODULE}.TextLength
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="not found"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_fan_in_string_dep_not_found(self, tmp_path: Path) -> None:
+        """Fan-in with an unknown string dependency raises ConfigLoadError."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.CombineResults
+      depends_on:
+        reversed: nonexistent.module.Task
+        length: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="not found"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_workflow_validation_failed(self, tmp_path: Path) -> None:
+        """Workflow validation error during build() is wrapped in ConfigLoadError."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: ambiguous
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="Workflow validation failed"):
+            load_workflow_from_yaml(wf_path, in_path)
+
     def test_timeout_seconds_passed(self, tmp_path: Path) -> None:
         wf_path = _write_workflow_yaml(
             tmp_path,
@@ -730,6 +903,19 @@ class TestCoerceHookParams:
 
         params = _coerce_hook_params(TimingHook, {})
         assert params == {}
+
+    def test_get_type_hints_failure_returns_uncoerced(self) -> None:
+        """When get_type_hints() raises, params are returned unmodified."""
+        from taskekrabbe.hooks.base import BaseHook
+
+        class BadAnnotationHook(BaseHook):
+            def __init__(self, x: "NonexistentType") -> None:  # type: ignore[name-defined] # noqa: F821, UP037
+                pass
+
+        params = {"x": "/some/path"}
+        result = _coerce_hook_params(BadAnnotationHook, params)
+        assert result == {"x": "/some/path"}
+        assert isinstance(result["x"], str)
 
     def test_extra_params_error(self, tmp_path: Path) -> None:
         """Extra params should cause TypeError when instantiating the hook."""

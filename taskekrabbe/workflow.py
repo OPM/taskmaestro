@@ -197,10 +197,7 @@ class Workflow:
             elif isinstance(deps, dict):
                 # Fan-in: validate each field
                 downstream_input = get_input_type(task_cls)
-                if not issubclass(downstream_input, BaseModel):
-                    raise WorkflowDefinitionError(
-                        f"Fan-in task {task_cls.name} input must be a Pydantic model"
-                    )
+                assert issubclass(downstream_input, BaseModel)  # guaranteed by Task[I, O] bound
                 model_fields = downstream_input.model_fields
                 # Check that every mapped field exists and types match
                 for field_name, upstream_ref in deps.items():

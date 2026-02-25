@@ -257,6 +257,21 @@ class TestTimeouts:
         assert "timed out" in (result.error or "")
 
 
+class TestAlarmUnavailable:
+    def test_alarm_unavailable_warns(self, ctx: ExecutionContext) -> None:
+        """When signal.alarm is unavailable, a warning is issued and execution proceeds."""
+        from unittest.mock import patch
+
+        wf = Workflow(name="test", tasks=[AddOne])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        with (
+            patch("taskekrabbe.runner.signal.signal", side_effect=AttributeError),
+            pytest.warns(UserWarning, match="signal.alarm not available"),
+        ):
+            result = Runner().run(job, ctx=ctx, timeout_seconds=60)
+        assert result.status == JobStatus.COMPLETED
+
+
 class TestContextIntegration:
     def test_context_auto_created(self) -> None:
         wf = Workflow(name="test", tasks=[AddOne, Double])

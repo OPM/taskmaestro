@@ -163,3 +163,12 @@ class TestHookErrorHandling:
         Runner(hooks=[hook1, hook2]).run(job, ctx=ctx)
         assert hook1.events == hook2.events
         assert len(hook1.events) == 4  # job_start, task_start, task_complete, job_complete
+
+
+class TestBaseHookNoOps:
+    def test_base_hook_handles_failure_events(self, ctx: ExecutionContext) -> None:
+        """BaseHook's on_job_fail and on_task_fail no-ops execute without error."""
+        wf = Workflow(name="test", tasks=[FailingTask])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        result = Runner(hooks=[BaseHook()]).run(job, ctx=ctx)
+        assert result.status == JobStatus.FAILED

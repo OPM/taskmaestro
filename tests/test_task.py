@@ -101,6 +101,25 @@ class TestTypeIntrospection:
         assert get_output_type(Stringify) is StringOutput
 
 
+class TestTypeVarSkipping:
+    def test_unresolved_typevar_skipped(self) -> None:
+        """Unresolved TypeVar in a generic Task subclass is skipped, then raises TypeError."""
+        from typing import TypeVar as TV
+
+        T = TV("T", bound=BaseModel)
+
+        class GenericTask(Task[T, NumberOutput]):  # type: ignore[type-var]
+            name = "generic_task"
+
+            def run(self, input: BaseModel, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=0)
+
+        import pytest
+
+        with pytest.raises(TypeError, match="Cannot resolve type argument"):
+            get_input_type(GenericTask)
+
+
 class TestInlinePorts:
     """Tests for Feature 1: inner Inputs/Outputs class detection."""
 
