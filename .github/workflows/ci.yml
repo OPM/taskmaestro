@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Ruff check
+        if: matrix.python-version == '3.12'
+        run: ruff check taskekrabbe/ tests/
+
+      - name: Ruff format check
+        if: matrix.python-version == '3.12'
+        run: ruff format --check taskekrabbe/ tests/
+
+      - name: Mypy type check
+        if: matrix.python-version == '3.12'
+        run: mypy taskekrabbe
+
+      - name: Run tests with coverage
+        run: pytest --cov=taskekrabbe --cov-report=term-missing
