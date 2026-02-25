@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from workflow_runner import ExecutionContext, Task, Workflow, to_mermaid
+from taskekrabbe import ExecutionContext, Task, Workflow, to_mermaid
 
 # --- Models for fan-in DAG test ---
 

@@ -7,7 +7,7 @@ import time
 import pytest
 from pydantic import BaseModel
 
-from workflow_runner import ExecutionContext, Task
+from taskekrabbe import ExecutionContext, Task
 
 # --- Reusable Pydantic models ---
 

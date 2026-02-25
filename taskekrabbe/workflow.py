@@ -6,12 +6,12 @@ from typing import Any, Union
 
 from pydantic import BaseModel
 
-from workflow_runner.exceptions import (
+from taskekrabbe.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     WorkflowDefinitionError,
 )
-from workflow_runner.task import Task, get_input_type, get_output_type
+from taskekrabbe.task import Task, get_input_type, get_output_type
 
 # Stored dependency types after name resolution:
 #   None              — root task
@@ -257,7 +257,7 @@ class Workflow:
 
     def to_mermaid(self) -> str:
         """Return a Mermaid diagram string for this workflow."""
-        from workflow_runner.visualization import to_mermaid
+        from taskekrabbe.visualization import to_mermaid
 
         return to_mermaid(self)
 

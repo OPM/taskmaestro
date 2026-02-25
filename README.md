@@ -1,4 +1,4 @@
-# Workflow Runner
+# Taskekrabbe
 
 A Python 3.12+ library for defining and executing typed DAG task workflows with Pydantic models, lifecycle hooks, and fail-fast semantics.
 
@@ -16,7 +16,7 @@ pip install -e ".[dev]"
 
 ```python
 from pydantic import BaseModel
-from workflow_runner import Task, Workflow, Job, Runner, ExecutionContext
+from taskekrabbe import Task, Workflow, Job, Runner, ExecutionContext
 
 class NumberInput(BaseModel):
     value: int
@@ -44,7 +44,7 @@ print(result.result.value)  # 12
 
 ```python
 from pydantic import BaseModel
-from workflow_runner import Task, Workflow, Job, Runner, ExecutionContext
+from taskekrabbe import Task, Workflow, Job, Runner, ExecutionContext
 
 class Input(BaseModel):
     value: int
@@ -117,5 +117,5 @@ source .venv/bin/activate
 pytest -v                  # run tests
 ruff check .               # lint
 ruff format .              # format
-mypy workflow_runner       # type check (strict)
+mypy taskekrabbe       # type check (strict)
 ```

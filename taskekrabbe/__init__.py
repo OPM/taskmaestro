@@ -1,7 +1,7 @@
 """Workflow Runner: typed DAG task workflows with Pydantic models."""
 
-from workflow_runner.context import ExecutionContext
-from workflow_runner.exceptions import (
+from taskekrabbe.context import ExecutionContext
+from taskekrabbe.exceptions import (
     ConfigLoadError,
     CycleDetectedError,
     IncompleteInputError,
@@ -12,12 +12,12 @@ from workflow_runner.exceptions import (
     WorkflowDefinitionError,
     WorkflowRunnerError,
 )
-from workflow_runner.job import Job, JobStatus, TaskResult, TaskStatus
-from workflow_runner.runner import Runner
-from workflow_runner.task import Task
-from workflow_runner.visualization import to_mermaid
-from workflow_runner.workflow import Workflow, WorkflowBuilder
-from workflow_runner.yaml_config import (
+from taskekrabbe.job import Job, JobStatus, TaskResult, TaskStatus
+from taskekrabbe.runner import Runner
+from taskekrabbe.task import Task
+from taskekrabbe.visualization import to_mermaid
+from taskekrabbe.workflow import Workflow, WorkflowBuilder
+from taskekrabbe.yaml_config import (
     LoadedWorkflow,
     load_workflow_from_yaml,
     run_workflow_from_yaml,

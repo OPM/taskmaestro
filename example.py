@@ -28,14 +28,14 @@ from collections import Counter
 
 from pydantic import BaseModel
 
-from workflow_runner import (
+from taskekrabbe import (
     ExecutionContext,
     Job,
     Runner,
     Task,
     Workflow,
 )
-from workflow_runner.hooks import LoggingHook, TimingHook
+from taskekrabbe.hooks import LoggingHook, TimingHook
 
 # ---------------------------------------------------------------------------
 # Models
@@ -381,7 +381,7 @@ def run_python_mode() -> None:
 
 def run_yaml_mode(workflow_path: str, input_path: str) -> None:
     """Run the pipeline from the YAML workflow and input files."""
-    from workflow_runner.yaml_config import load_workflow_from_yaml
+    from taskekrabbe.yaml_config import load_workflow_from_yaml
 
     loaded = load_workflow_from_yaml(workflow_path, input_path)
     result = loaded.run()

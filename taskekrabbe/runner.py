@@ -9,15 +9,15 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from workflow_runner.context import ExecutionContext
-from workflow_runner.exceptions import (
+from taskekrabbe.context import ExecutionContext
+from taskekrabbe.exceptions import (
     JobStateError,
     TaskOutputTypeError,
     TaskTimeoutError,
 )
-from workflow_runner.hooks.base import BaseHook, Event
-from workflow_runner.job import Job, JobStatus, TaskResult, TaskStatus
-from workflow_runner.task import get_input_type, get_output_type
+from taskekrabbe.hooks.base import BaseHook, Event
+from taskekrabbe.job import Job, JobStatus, TaskResult, TaskStatus
+from taskekrabbe.task import get_input_type, get_output_type
 
 
 class Runner:

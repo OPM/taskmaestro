@@ -10,13 +10,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from tests.conftest import (
-    AddOne,
-    Double,
-    FailingTask,
-    NumberInput,
-)
-from workflow_runner import (
+from taskekrabbe import (
     ExecutionContext,
     Job,
     JobStatus,
@@ -24,8 +18,14 @@ from workflow_runner import (
     Task,
     Workflow,
 )
-from workflow_runner.hooks import LoggingHook, ResultPersistenceHook, TimingHook
-from workflow_runner.hooks.base import BaseHook
+from taskekrabbe.hooks import LoggingHook, ResultPersistenceHook, TimingHook
+from taskekrabbe.hooks.base import BaseHook
+from tests.conftest import (
+    AddOne,
+    Double,
+    FailingTask,
+    NumberInput,
+)
 
 
 class RecordingHook(BaseHook):
@@ -86,7 +86,7 @@ class TestLoggingHook:
         wf = Workflow(name="test", tasks=[AddOne])
         job = Job(workflow=wf, config=NumberInput(value=1))
         hook = LoggingHook(level=logging.INFO)
-        with caplog.at_level(logging.INFO, logger="workflow_runner.hooks.logging"):
+        with caplog.at_level(logging.INFO, logger="taskekrabbe.hooks.logging"):
             Runner(hooks=[hook]).run(job, ctx=ctx)
         assert any("Job started" in msg for msg in caplog.messages)
         assert any("Task started: add_one" in msg for msg in caplog.messages)
@@ -97,7 +97,7 @@ class TestLoggingHook:
         wf = Workflow(name="test", tasks=[FailingTask])
         job = Job(workflow=wf, config=NumberInput(value=1))
         hook = LoggingHook(level=logging.INFO)
-        with caplog.at_level(logging.INFO, logger="workflow_runner.hooks.logging"):
+        with caplog.at_level(logging.INFO, logger="taskekrabbe.hooks.logging"):
             Runner(hooks=[hook]).run(job, ctx=ctx)
         assert any("Task failed" in msg for msg in caplog.messages)
         assert any("Job failed" in msg for msg in caplog.messages)

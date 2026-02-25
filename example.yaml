@@ -29,8 +29,8 @@ workflow:
 
 runner:
   hooks:
-    - hook: workflow_runner.hooks.logging.LoggingHook
-    - hook: workflow_runner.hooks.timing.TimingHook
+    - hook: taskekrabbe.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.timing.TimingHook
 
 context:
   services:

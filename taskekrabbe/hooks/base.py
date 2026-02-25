@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pydantic import BaseModel
 
-    from workflow_runner.job import Job
-    from workflow_runner.task import Task
+    from taskekrabbe.job import Job
+    from taskekrabbe.task import Task
 
 
 class Event(StrEnum):

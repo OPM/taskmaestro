@@ -11,13 +11,13 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
-from workflow_runner.context import ExecutionContext
-from workflow_runner.exceptions import ConfigLoadError
-from workflow_runner.hooks.base import BaseHook
-from workflow_runner.job import Job
-from workflow_runner.runner import Runner
-from workflow_runner.task import Task, get_input_type
-from workflow_runner.workflow import Workflow, WorkflowBuilder
+from taskekrabbe.context import ExecutionContext
+from taskekrabbe.exceptions import ConfigLoadError
+from taskekrabbe.hooks.base import BaseHook
+from taskekrabbe.job import Job
+from taskekrabbe.runner import Runner
+from taskekrabbe.task import Task, get_input_type
+from taskekrabbe.workflow import Workflow, WorkflowBuilder
 
 # --- Pydantic schema models for YAML validation ---
 

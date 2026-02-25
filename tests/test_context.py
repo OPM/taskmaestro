@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow_runner.context import ExecutionContext
+from taskekrabbe.context import ExecutionContext
 
 
 class TestExecutionContext:
@@ -21,7 +21,7 @@ class TestExecutionContext:
 
     def test_default_logger(self) -> None:
         ctx = ExecutionContext()
-        assert ctx.logger.name == "workflow_runner"
+        assert ctx.logger.name == "taskekrabbe"
 
     def test_custom_logger(self) -> None:
         logger = logging.getLogger("custom")

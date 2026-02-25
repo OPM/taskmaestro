@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from taskekrabbe import Job, JobStatus, Workflow, WorkflowDefinitionError
 from tests.conftest import AddOne, AddOneB, Double, FanInTask, NumberInput, NumberOutput
-from workflow_runner import Job, JobStatus, Workflow, WorkflowDefinitionError
 
 
 class TestJobCreation:

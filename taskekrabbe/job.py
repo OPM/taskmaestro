@@ -9,9 +9,9 @@ from typing import Generic, TypeVar
 
 from pydantic import BaseModel
 
-from workflow_runner.exceptions import WorkflowDefinitionError
-from workflow_runner.task import get_input_type
-from workflow_runner.workflow import Workflow
+from taskekrabbe.exceptions import WorkflowDefinitionError
+from taskekrabbe.task import get_input_type
+from taskekrabbe.workflow import Workflow
 
 
 class JobStatus(StrEnum):

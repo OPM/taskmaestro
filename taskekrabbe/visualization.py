@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from workflow_runner.task import get_input_type, get_output_type
+from taskekrabbe.task import get_input_type, get_output_type
 
 if TYPE_CHECKING:
-    from workflow_runner.workflow import Workflow
+    from taskekrabbe.workflow import Workflow
 
 
 def _field_type_label(task_by_name: dict[str, type], upstream_name: str, field_name: str) -> str:
@@ -25,7 +25,7 @@ def to_mermaid(workflow: Workflow) -> str:
     Returns a ``graph TD`` block with a start node, task nodes, and edges
     labeled with the data types flowing between them.
     """
-    from workflow_runner.workflow import _extract_upstream_names
+    from taskekrabbe.workflow import _extract_upstream_names
 
     lines: list[str] = ["---", f"title: {workflow.name}", "---", "graph TD"]
 

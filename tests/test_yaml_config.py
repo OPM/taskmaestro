@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from pydantic import BaseModel, ValidationError
 
-from workflow_runner import (
+from taskekrabbe import (
     ConfigLoadError,
     ExecutionContext,
     JobStatus,
     Task,
 )
-from workflow_runner.yaml_config import (
+from taskekrabbe.yaml_config import (
     YamlWorkflowConfig,
     _coerce_hook_params,
     import_class,
@@ -280,10 +280,10 @@ workflow:
     - task: {THIS_MODULE}.UpperText
 runner:
   hooks:
-    - hook: workflow_runner.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.logging.LoggingHook
       params:
         level: 20
-    - hook: workflow_runner.hooks.timing.TimingHook
+    - hook: taskekrabbe.hooks.timing.TimingHook
 """,
         )
         in_path = _write_input_yaml(tmp_path, "text: hello\n")
@@ -301,7 +301,7 @@ workflow:
     - task: {THIS_MODULE}.UpperText
 runner:
   hooks:
-    - hook: workflow_runner.hooks.persistence.ResultPersistenceHook
+    - hook: taskekrabbe.hooks.persistence.ResultPersistenceHook
       params:
         output_dir: "{output_dir}"
 """,
@@ -514,7 +514,7 @@ workflow:
     - task: {THIS_MODULE}.UpperText
 runner:
   hooks:
-    - hook: workflow_runner.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.logging.LoggingHook
       params:
         nonexistent_param: true
 """,
@@ -712,28 +712,28 @@ workflow:
 
 class TestCoerceHookParams:
     def test_path_coercion(self) -> None:
-        from workflow_runner.hooks.persistence import ResultPersistenceHook
+        from taskekrabbe.hooks.persistence import ResultPersistenceHook
 
         params = _coerce_hook_params(ResultPersistenceHook, {"output_dir": "/tmp/out"})
         assert isinstance(params["output_dir"], Path)
         assert params["output_dir"] == Path("/tmp/out")
 
     def test_passthrough_non_path(self) -> None:
-        from workflow_runner.hooks.logging import LoggingHook
+        from taskekrabbe.hooks.logging import LoggingHook
 
         params = _coerce_hook_params(LoggingHook, {"level": 20})
         assert params["level"] == 20
         assert isinstance(params["level"], int)
 
     def test_empty_params(self) -> None:
-        from workflow_runner.hooks.timing import TimingHook
+        from taskekrabbe.hooks.timing import TimingHook
 
         params = _coerce_hook_params(TimingHook, {})
         assert params == {}
 
     def test_extra_params_error(self, tmp_path: Path) -> None:
         """Extra params should cause TypeError when instantiating the hook."""
-        from workflow_runner.hooks.logging import LoggingHook
+        from taskekrabbe.hooks.logging import LoggingHook
 
         params = _coerce_hook_params(LoggingHook, {"level": 20, "unknown": True})
         with pytest.raises(TypeError):

@@ -1,6 +1,6 @@
 """Tests for the exception hierarchy."""
 
-from workflow_runner.exceptions import (
+from taskekrabbe.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     JobStateError,

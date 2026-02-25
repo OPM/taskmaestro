@@ -5,6 +5,16 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
+from taskekrabbe import (
+    ExecutionContext,
+    Job,
+    JobStatus,
+    Runner,
+    Task,
+    Workflow,
+)
+from taskekrabbe.exceptions import JobStateError
+from taskekrabbe.job import TaskStatus
 from tests.conftest import (
     AddOne,
     AddOneB,
@@ -18,16 +28,6 @@ from tests.conftest import (
     StringOutput,
     WrongOutputTask,
 )
-from workflow_runner import (
-    ExecutionContext,
-    Job,
-    JobStatus,
-    Runner,
-    Task,
-    Workflow,
-)
-from workflow_runner.exceptions import JobStateError
-from workflow_runner.job import TaskStatus
 
 
 class TestLinearExecution:

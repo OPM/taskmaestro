@@ -8,25 +8,25 @@ Typed DAG task workflow library with Pydantic models, lifecycle hooks, and fail-
 source .venv/bin/activate          # activate venv
 pip install -e ".[dev]"            # install with dev deps
 pytest -v                          # run tests
-ruff check workflow_runner/ tests/ # lint
-ruff format workflow_runner/ tests/ # format
-mypy workflow_runner               # type check (strict mode)
+ruff check taskekrabbe/ tests/ # lint
+ruff format taskekrabbe/ tests/ # format
+mypy taskekrabbe               # type check (strict mode)
 ```
 
 ## Architecture
 
 | File | Responsibility |
 |---|---|
-| `workflow_runner/exceptions.py` | Exception hierarchy (no internal deps) |
-| `workflow_runner/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
-| `workflow_runner/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
-| `workflow_runner/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
-| `workflow_runner/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
-| `workflow_runner/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
-| `workflow_runner/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
-| `workflow_runner/hooks/logging.py` | `LoggingHook` — logs events via `logging` module |
-| `workflow_runner/hooks/timing.py` | `TimingHook` — records durations via `time.monotonic()` |
-| `workflow_runner/hooks/persistence.py` | `ResultPersistenceHook` — writes `{task_name}.json` per task |
+| `taskekrabbe/exceptions.py` | Exception hierarchy (no internal deps) |
+| `taskekrabbe/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
+| `taskekrabbe/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
+| `taskekrabbe/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
+| `taskekrabbe/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
+| `taskekrabbe/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
+| `taskekrabbe/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
+| `taskekrabbe/hooks/logging.py` | `LoggingHook` — logs events via `logging` module |
+| `taskekrabbe/hooks/timing.py` | `TimingHook` — records durations via `time.monotonic()` |
+| `taskekrabbe/hooks/persistence.py` | `ResultPersistenceHook` — writes `{task_name}.json` per task |
 
 ## Key Patterns
 

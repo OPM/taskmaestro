@@ -24,7 +24,7 @@ class ExecutionContext:
         scratch_dir: Path | None = None,
     ) -> None:
         self.correlation_id = correlation_id or str(uuid.uuid4())
-        self.logger = logger or logging.getLogger("workflow_runner")
+        self.logger = logger or logging.getLogger("taskekrabbe")
         self.scratch_dir = scratch_dir or Path(tempfile.gettempdir()) / self.correlation_id
         self._registry: dict[str, Any] = {}
 

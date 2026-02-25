@@ -7,9 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from workflow_runner.hooks.base import BaseHook
-from workflow_runner.job import Job
-from workflow_runner.task import Task
+from taskekrabbe.hooks.base import BaseHook
+from taskekrabbe.job import Job
+from taskekrabbe.task import Task
 
 
 class ResultPersistenceHook(BaseHook):

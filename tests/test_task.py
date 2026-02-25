@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
+from taskekrabbe import ExecutionContext, Task
+from taskekrabbe.task import get_input_type, get_output_type
 from tests.conftest import (
     AddOne,
     Double,
@@ -12,8 +14,6 @@ from tests.conftest import (
     NumberOutput,
     StringOutput,
 )
-from workflow_runner import ExecutionContext, Task
-from workflow_runner.task import get_input_type, get_output_type
 
 
 class TestTaskName:
@@ -195,7 +195,7 @@ class TestInlinePorts:
             def run(self, input: Intermediate, ctx: ExecutionContext) -> Sink.Outputs:
                 return self.Outputs(text=str(input.val))
 
-        from workflow_runner import Job, Runner, Workflow
+        from taskekrabbe import Job, Runner, Workflow
 
         wf = Workflow("inline_test", tasks=[Source, Sink])
         job = Job(workflow=wf, config=Source.Inputs(val=10))
