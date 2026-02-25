@@ -16,9 +16,9 @@ independently to BuildReport via output field routing.
 
 Run:
     source .venv/bin/activate
-    python example.py                      # Python API
-    python example.py --yaml               # YAML config (default: example.yaml)
-    python example.py --yaml my_config.yaml  # custom YAML config
+    python example.py                                              # Python API
+    python example.py --yaml                                       # YAML config (defaults)
+    python example.py --yaml example.yaml --input example_input.yaml  # custom files
 """
 
 from __future__ import annotations
@@ -379,11 +379,11 @@ def run_python_mode() -> None:
     print_report(result, timing, workflow)
 
 
-def run_yaml_mode(yaml_path: str) -> None:
-    """Run the pipeline from the YAML config file."""
+def run_yaml_mode(workflow_path: str, input_path: str) -> None:
+    """Run the pipeline from the YAML workflow and input files."""
     from workflow_runner.yaml_config import load_workflow_from_yaml
 
-    loaded = load_workflow_from_yaml(yaml_path)
+    loaded = load_workflow_from_yaml(workflow_path, input_path)
     result = loaded.run()
 
     # Find TimingHook from the runner's hook list
@@ -404,10 +404,14 @@ def main() -> None:
         "--yaml", metavar="FILE", nargs="?", const="example.yaml",
         help="Load workflow from a YAML config file (default: example.yaml)",
     )
+    parser.add_argument(
+        "--input", metavar="FILE", default="example_input.yaml",
+        help="Input YAML file (default: example_input.yaml)",
+    )
     args = parser.parse_args()
 
     if args.yaml:
-        run_yaml_mode(args.yaml)
+        run_yaml_mode(args.yaml, args.input)
     else:
         run_python_mode()
 

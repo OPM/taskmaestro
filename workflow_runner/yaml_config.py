@@ -65,7 +65,6 @@ class YamlWorkflowConfig(BaseModel):
     workflow: WorkflowSectionConfig
     runner: RunnerConfig = Field(default_factory=RunnerConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
-    input: dict[str, Any]
 
 
 # --- Utilities ---
@@ -136,34 +135,46 @@ class LoadedWorkflow:
 # --- Main loader ---
 
 
-def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
-    """Load a complete workflow configuration from a YAML file.
+def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -> LoadedWorkflow:
+    """Load a complete workflow configuration from a workflow YAML file and an input YAML file.
 
     Returns a LoadedWorkflow with workflow, runner, job, and context
     ready to execute.
 
     Raises ConfigLoadError for any loading or validation failure.
     """
-    path = Path(path)
+    workflow_path = Path(workflow_path)
+    input_path = Path(input_path)
 
-    # 1. Parse YAML
+    # 1. Parse workflow YAML
     try:
-        raw = yaml.safe_load(path.read_text())
+        raw = yaml.safe_load(workflow_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"YAML parse error: {exc}") from exc
     except OSError as exc:
-        raise ConfigLoadError(f"Cannot read file '{path}': {exc}") from exc
+        raise ConfigLoadError(f"Cannot read file '{workflow_path}': {exc}") from exc
 
     if not isinstance(raw, dict):
         raise ConfigLoadError("YAML file must contain a mapping at top level")
 
-    # 2. Schema validation
+    # 2. Parse input YAML
+    try:
+        raw_input = yaml.safe_load(input_path.read_text())
+    except yaml.YAMLError as exc:
+        raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
+    except OSError as exc:
+        raise ConfigLoadError(f"Cannot read input file '{input_path}': {exc}") from exc
+
+    if not isinstance(raw_input, dict):
+        raise ConfigLoadError("Input YAML file must contain a mapping")
+
+    # 3. Schema validation
     try:
         config = YamlWorkflowConfig.model_validate(raw)
     except ValidationError as exc:
         raise ConfigLoadError(f"YAML schema validation error: {exc}") from exc
 
-    # 3. Resolve task import paths
+    # 4. Resolve task import paths
     task_classes: dict[str, type[Task[Any, Any]]] = {}
     for task_config in config.workflow.tasks:
         cls = import_class(task_config.task)
@@ -171,10 +182,10 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
             raise ConfigLoadError(f"'{task_config.task}' is not a Task subclass")
         task_classes[task_config.task] = cls
 
-    # 4. Detect linear vs DAG mode
+    # 5. Detect linear vs DAG mode
     has_depends_on = any(tc.depends_on is not None for tc in config.workflow.tasks)
 
-    # 5. Build Workflow
+    # 6. Build Workflow
     if not has_depends_on:
         # Linear mode: chain tasks in list order
         task_list = [task_classes[tc.task] for tc in config.workflow.tasks]
@@ -248,7 +259,7 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
         except Exception as exc:
             raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
 
-    # 6. Validate input against root task input type
+    # 7. Validate input against root task input type
     root_tasks = [
         task_classes[tc.task]
         for tc in config.workflow.tasks
@@ -260,14 +271,14 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
 
     input_type = get_input_type(root_tasks[0])
     try:
-        validated_input = input_type.model_validate(config.input)
+        validated_input = input_type.model_validate(raw_input)
     except ValidationError as exc:
         raise ConfigLoadError(f"Input validation error: {exc}") from exc
 
-    # 7. Build Job
+    # 8. Build Job
     job: Job[Any] = Job(workflow, validated_input)
 
-    # 8. Instantiate hooks
+    # 9. Instantiate hooks
     hooks: list[BaseHook] = []
     for hook_config in config.runner.hooks:
         hook_cls = import_class(hook_config.hook)
@@ -281,7 +292,7 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
 
     runner = Runner(hooks=hooks)
 
-    # 9. Build ExecutionContext
+    # 10. Build ExecutionContext
     ctx_kwargs: dict[str, Any] = {}
     if config.context.correlation_id:
         ctx_kwargs["correlation_id"] = config.context.correlation_id
@@ -291,7 +302,7 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
     for key, value in config.context.services.items():
         context.register(key, value)
 
-    # 10. Return LoadedWorkflow
+    # 11. Return LoadedWorkflow
     return LoadedWorkflow(
         workflow=workflow,
         runner=runner,
@@ -301,7 +312,7 @@ def load_workflow_from_yaml(path: str | Path) -> LoadedWorkflow:
     )
 
 
-def run_workflow_from_yaml(path: str | Path) -> Job[Any]:
-    """Load and run a workflow from a YAML config file in one step."""
-    loaded = load_workflow_from_yaml(path)
+def run_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -> Job[Any]:
+    """Load and run a workflow from a workflow YAML file and an input YAML file in one step."""
+    loaded = load_workflow_from_yaml(workflow_path, input_path)
     return loaded.run()

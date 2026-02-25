@@ -76,9 +76,16 @@ class CombineResults(Task[FanInInput, FanInOutput]):
 THIS_MODULE = "tests.test_yaml_config"
 
 
-def _write_yaml(tmp_path: Path, content: str) -> Path:
-    """Write YAML content to a temp file and return the path."""
+def _write_workflow_yaml(tmp_path: Path, content: str) -> Path:
+    """Write workflow YAML content to a temp file and return the path."""
     p = tmp_path / "workflow.yaml"
+    p.write_text(content)
+    return p
+
+
+def _write_input_yaml(tmp_path: Path, content: str) -> Path:
+    """Write input YAML content to a temp file and return the path."""
+    p = tmp_path / "input.yaml"
     p.write_text(content)
     return p
 
@@ -123,7 +130,6 @@ class TestYamlSchemaValidation:
                 "name": "test",
                 "tasks": [{"task": "some.module.Task"}],
             },
-            "input": {"key": "value"},
         }
         config = YamlWorkflowConfig.model_validate(raw)
         assert config.workflow.name == "test"
@@ -134,24 +140,13 @@ class TestYamlSchemaValidation:
         assert config.context.services == {}
 
     def test_missing_workflow_key(self) -> None:
-        raw = {"input": {"key": "value"}}
-        with pytest.raises(ValidationError):
-            YamlWorkflowConfig.model_validate(raw)
-
-    def test_missing_input_key(self) -> None:
-        raw = {
-            "workflow": {
-                "name": "test",
-                "tasks": [{"task": "mod.Task"}],
-            },
-        }
+        raw: dict[str, object] = {}
         with pytest.raises(ValidationError):
             YamlWorkflowConfig.model_validate(raw)
 
     def test_empty_tasks_list(self) -> None:
         raw = {
             "workflow": {"name": "test", "tasks": []},
-            "input": {"key": "value"},
         }
         with pytest.raises(ValidationError):
             YamlWorkflowConfig.model_validate(raw)
@@ -177,7 +172,6 @@ class TestYamlSchemaValidation:
                 "scratch_dir": "/tmp/test",
                 "services": {"multiplier": 3},
             },
-            "input": {"text": "hello"},
         }
         config = YamlWorkflowConfig.model_validate(raw)
         assert config.workflow.result_task == "mod.ResultTask"
@@ -200,7 +194,6 @@ class TestYamlSchemaValidation:
                     },
                 ],
             },
-            "input": {"val": 1},
         }
         config = YamlWorkflowConfig.model_validate(raw)
         assert config.workflow.tasks[2].depends_on == {"x": "mod.A", "y": "mod.B"}
@@ -213,17 +206,18 @@ class TestYamlSchemaValidation:
 
 class TestLoadWorkflowFromYaml:
     def test_linear_workflow_end_to_end(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: linear_test
   tasks:
     - task: {THIS_MODULE}.UpperText
     - task: {THIS_MODULE}.ReverseText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
 
         assert loaded.workflow.name == "linear_test"
         assert loaded.job.status == JobStatus.PENDING
@@ -234,7 +228,9 @@ input:
         assert result.result.text == "OLLEH"  # type: ignore[union-attr]
 
     def test_dag_workflow_end_to_end(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: dag_test
   tasks:
@@ -247,11 +243,10 @@ workflow:
       depends_on:
         reversed: {THIS_MODULE}.ReverseText
         length: {THIS_MODULE}.TextLength
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
 
         assert result.status == JobStatus.COMPLETED
@@ -260,22 +255,25 @@ input:
         assert "5 chars" in result.result.summary  # type: ignore[union-attr]
 
     def test_minimal_config(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: minimal
   tasks:
     - task: {THIS_MODULE}.UpperText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
         assert result.result.text == "HELLO"  # type: ignore[union-attr]
 
     def test_hooks_with_params(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: hooks_test
   tasks:
@@ -286,16 +284,17 @@ runner:
       params:
         level: 20
     - hook: workflow_runner.hooks.timing.TimingHook
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert len(loaded.runner.hooks) == 2
 
     def test_persistence_hook_path_coercion(self, tmp_path: Path) -> None:
         output_dir = tmp_path / "results"
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: persist_test
   tasks:
@@ -305,17 +304,18 @@ runner:
     - hook: workflow_runner.hooks.persistence.ResultPersistenceHook
       params:
         output_dir: "{output_dir}"
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
         assert (output_dir / "upper_text.json").exists()
 
     def test_context_services(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: ctx_test
   tasks:
@@ -325,119 +325,172 @@ context:
   services:
     multiplier: 3
     name: test
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert loaded.context.correlation_id == "test-run-42"
         assert loaded.context.resolve("multiplier") == 3
         assert loaded.context.resolve("name") == "test"
 
     def test_context_scratch_dir(self, tmp_path: Path) -> None:
         scratch = tmp_path / "scratch"
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: scratch_test
   tasks:
     - task: {THIS_MODULE}.UpperText
 context:
   scratch_dir: "{scratch}"
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert loaded.context.scratch_dir == scratch
 
     def test_bad_import_path(self, tmp_path: Path) -> None:
-        yaml_content = """\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            """\
 workflow:
   name: bad
   tasks:
     - task: nonexistent.module.BadTask
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="Cannot import module"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_not_a_task_class(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad
   tasks:
     - task: {THIS_MODULE}.TextInput
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="not a Task subclass"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_bad_yaml_syntax(self, tmp_path: Path) -> None:
-        yaml_content = """\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            """\
 workflow:
   name: bad
   tasks:
     - task: [invalid yaml
 input:
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="YAML parse error"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_input_validation_error(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad_input
   tasks:
     - task: {THIS_MODULE}.UpperText
-input:
-  wrong_field: 123
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "wrong_field: 123\n")
         with pytest.raises(ConfigLoadError, match="Input validation error"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_file_not_found(self, tmp_path: Path) -> None:
-        path = tmp_path / "nonexistent.yaml"
+        wf_path = tmp_path / "nonexistent.yaml"
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="Cannot read file"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_input_file_not_found(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: test
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = tmp_path / "nonexistent_input.yaml"
+        with pytest.raises(ConfigLoadError, match="Cannot read input file"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_input_bad_yaml_syntax(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: test
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: [invalid yaml\n")
+        with pytest.raises(ConfigLoadError, match="Input YAML parse error"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_input_not_a_mapping(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: test
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "- item1\n- item2\n")
+        with pytest.raises(ConfigLoadError, match="Input YAML file must contain a mapping"):
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_explicit_result_task(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: explicit_result
   result_task: {THIS_MODULE}.UpperText
   tasks:
     - task: {THIS_MODULE}.UpperText
     - task: {THIS_MODULE}.ReverseText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert loaded.workflow.result_task.name == "upper_text"
 
     def test_dependency_not_found(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad_dep
   tasks:
     - task: {THIS_MODULE}.UpperText
     - task: {THIS_MODULE}.ReverseText
       depends_on: nonexistent.module.Missing
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="not found"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_not_a_hook_class(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad_hook
   tasks:
@@ -445,15 +498,16 @@ workflow:
 runner:
   hooks:
     - hook: {THIS_MODULE}.TextInput
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="not a BaseHook subclass"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_hook_bad_params(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad_hook_params
   tasks:
@@ -463,26 +517,26 @@ runner:
     - hook: workflow_runner.hooks.logging.LoggingHook
       params:
         nonexistent_param: true
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="Cannot instantiate hook"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_timeout_seconds_passed(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: timeout_test
   tasks:
     - task: {THIS_MODULE}.UpperText
 runner:
   timeout_seconds: 60
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert loaded._timeout_seconds == 60
 
 
@@ -496,25 +550,28 @@ class TestYamlFieldRouting:
 
     def test_list_depends_on_end_to_end(self, tmp_path: Path) -> None:
         """Field routing via list-form depends_on works end-to-end."""
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: yaml_field_ref
   tasks:
     - task: {THIS_MODULE}.UpperText
     - task: {THIS_MODULE}.TextLength
       depends_on: {THIS_MODULE}.UpperText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
         assert result.result.length == 5  # type: ignore[union-attr]
 
     def test_dict_with_list_field_ref(self, tmp_path: Path) -> None:
         """Fan-in with list-form field refs in YAML dict."""
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: yaml_mixed
   tasks:
@@ -527,18 +584,19 @@ workflow:
       depends_on:
         reversed: {THIS_MODULE}.ReverseText
         length: {THIS_MODULE}.TextLength
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
         assert "OLLEH" in result.result.summary  # type: ignore[union-attr]
 
     def test_invalid_list_length_raises(self, tmp_path: Path) -> None:
         """A list with != 2 elements raises ConfigLoadError."""
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad
   tasks:
@@ -548,16 +606,17 @@ workflow:
         - {THIS_MODULE}.UpperText
         - text
         - extra
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="List depends_on must be"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
     def test_list_dep_not_found_raises(self, tmp_path: Path) -> None:
         """List-form depends_on with unknown task raises ConfigLoadError."""
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: bad
   tasks:
@@ -566,27 +625,27 @@ workflow:
       depends_on:
         - nonexistent.module.Task
         - text
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
         with pytest.raises(ConfigLoadError, match="not found"):
-            load_workflow_from_yaml(path)
+            load_workflow_from_yaml(wf_path, in_path)
 
 
 class TestRunWorkflowFromYaml:
     def test_convenience_function(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: convenience
   tasks:
     - task: {THIS_MODULE}.UpperText
     - task: {THIS_MODULE}.ReverseText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        job = run_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        job = run_workflow_from_yaml(wf_path, in_path)
         assert job.status == JobStatus.COMPLETED
         assert job.result is not None
         assert job.result.text == "OLLEH"  # type: ignore[union-attr]
@@ -599,46 +658,49 @@ input:
 
 class TestLoadedWorkflow:
     def test_run_method(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: run_test
   tasks:
     - task: {THIS_MODULE}.UpperText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
 
     def test_components_accessible(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: access_test
   tasks:
     - task: {THIS_MODULE}.UpperText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         assert loaded.workflow is not None
         assert loaded.runner is not None
         assert loaded.job is not None
         assert loaded.context is not None
 
     def test_frozen(self, tmp_path: Path) -> None:
-        yaml_content = f"""\
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
 workflow:
   name: frozen_test
   tasks:
     - task: {THIS_MODULE}.UpperText
-input:
-  text: hello
-"""
-        path = _write_yaml(tmp_path, yaml_content)
-        loaded = load_workflow_from_yaml(path)
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
         with pytest.raises(AttributeError):
             loaded.workflow = None  # type: ignore[misc]
 
