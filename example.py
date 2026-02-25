@@ -12,8 +12,9 @@ depends only on PrepareText, and all merge into a final BuildReport.
 
 Run:
     source .venv/bin/activate
-    python example.py           # Python API
-    python example.py --yaml    # YAML config
+    python example.py                      # Python API
+    python example.py --yaml               # YAML config (default: example.yaml)
+    python example.py --yaml my_config.yaml  # custom YAML config
 """
 
 from __future__ import annotations
@@ -347,13 +348,10 @@ def run_python_mode() -> None:
     print_report(result, timing, workflow)
 
 
-def run_yaml_mode() -> None:
+def run_yaml_mode(yaml_path: str) -> None:
     """Run the pipeline from the YAML config file."""
-    from pathlib import Path
-
     from workflow_runner.yaml_config import load_workflow_from_yaml
 
-    yaml_path = Path(__file__).parent / "example.yaml"
     loaded = load_workflow_from_yaml(yaml_path)
     result = loaded.run()
 
@@ -372,13 +370,13 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Text Analysis Pipeline example")
     parser.add_argument(
-        "--yaml", action="store_true",
-        help="Load workflow from example.yaml instead of the Python API",
+        "--yaml", metavar="FILE", nargs="?", const="example.yaml",
+        help="Load workflow from a YAML config file (default: example.yaml)",
     )
     args = parser.parse_args()
 
     if args.yaml:
-        run_yaml_mode()
+        run_yaml_mode(args.yaml)
     else:
         run_python_mode()
 
