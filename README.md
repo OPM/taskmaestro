@@ -1,5 +1,9 @@
 # Taskekrabbe
 
+<p align="center">
+  <img src="taskekrabbe.png" alt="Taskekrabbe" width="300">
+</p>
+
 A Python 3.12+ library for defining and executing typed DAG task workflows with Pydantic models, lifecycle hooks, and fail-fast semantics.
 
 ## Installation
