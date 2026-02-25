@@ -92,14 +92,16 @@ print(result.result.total)  # 16 (6 + 10)
 
 ## Core Concepts
 
+You define **Tasks** (typed units of work), compose them into a **Workflow** (linear chain or DAG), bind input data via a **Job**, and hand it to a **Runner** for execution. Type safety is enforced at build time — input/output models are validated across the entire graph. Fail-fast semantics stop execution on the first error, and **Hooks** provide cross-cutting lifecycle observations without coupling to task logic.
+
 | Concept | Description |
 |---|---|
-| **Task** | A unit of work with typed `Input` and `Output` (Pydantic models). Subclass `Task[I, O]` and implement `run()`. |
-| **Workflow** | A DAG of tasks. Use `Workflow(tasks=[...])` for linear chains or `Workflow.builder()` for DAGs. |
-| **Job** | A workflow bound to a config (input data). Tracks status and results. |
-| **Runner** | Executes jobs by iterating tasks in topological order. Supports hooks and timeouts. |
-| **ExecutionContext** | Cross-cutting state (logger, correlation ID, service registry) passed to every task. |
-| **Hooks** | Lifecycle observers (job/task start/complete/fail). Built-in: `LoggingHook`, `TimingHook`, `ResultPersistenceHook`. |
+| **Task** | Subclass `Task[I, O]` with Pydantic models for input and output, then implement `run(input, ctx)`. Each task can declare an optional `timeout_seconds`. For tasks with multiple named outputs, use inline `Inputs`/`Outputs` classes inside the task body. |
+| **Workflow** | Build a linear pipeline with `Workflow(tasks=[...])` or a DAG with `Workflow.builder()`. The builder accepts `depends_on` for single dependencies, fan-in dicts (`{"field": UpstreamTask}`), and `(Task, "field")` tuples for output field routing. Workflows are validated at build time for cycles, type compatibility, and input completeness. |
+| **Job** | Binds a Workflow to a typed config (the root task's input). Tracks `status` (`pending` → `running` → `completed`/`failed`), the final `result`, any `error`, and per-task `task_results`. A job can only be run once. |
+| **Runner** | Executes tasks in topological order, stopping on the first failure (fail-fast). Supports per-task and per-job timeouts via `signal.alarm` (Unix only). Dispatches lifecycle events to registered hooks. |
+| **ExecutionContext** | Passed to every `run()` call. Provides a `logger`, an auto-generated `correlation_id` (UUID), a `scratch_dir` (temporary directory), and a service registry (`register()`/`resolve()`) for injecting shared resources like DB connections. |
+| **Hooks** | Subclass `BaseHook` and override methods like `on_job_start`, `on_task_complete`, etc. Hook errors are swallowed and reported via `warnings.warn()`, so they never crash the job. Built-ins: `LoggingHook`, `TimingHook`, `ResultPersistenceHook`. |
 
 ## Error Handling
 
