@@ -13,6 +13,7 @@ from taskekrabbe.exceptions import (
     WorkflowRunnerError,
 )
 from taskekrabbe.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
+from taskekrabbe.object_model import ObjectModel
 from taskekrabbe.runner import Runner
 from taskekrabbe.task import Task
 from taskekrabbe.visualization import to_mermaid
@@ -34,6 +35,7 @@ __all__ = [
     "JobStateError",
     "JobStatus",
     "LoadedWorkflow",
+    "ObjectModel",
     "Runner",
     "Task",
     "TaskExecutionError",

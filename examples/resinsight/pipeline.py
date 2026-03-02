@@ -32,13 +32,14 @@ from __future__ import annotations
 from typing import Any
 
 import rips
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel
 
 from taskekrabbe import (
     EmptyConfig,
     ExecutionContext,
     Job,
     JobConfiguration,
+    ObjectModel,
     Runner,
     Task,
     Workflow,
@@ -62,38 +63,20 @@ class FilePath(BaseModel):
     path: str
 
 
-class GridCase(BaseModel):
-    """Output of LoadModel: case object and metadata."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    grid_case: rips.EclipseCase
+GridCase = ObjectModel[rips.EclipseCase]
+WellPath = ObjectModel[rips.WellPath]
 
 
-class WellPath(BaseModel):
-    """Output of LoadWellPath: imported well path."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    well: rips.WellPath
-
-
-class AddPerforationInput(BaseModel):
+class AddPerforationInput(ObjectModel[rips.WellPath]):
     """Input for AddPerforation: well from upstream, MD range from config."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    well: rips.WellPath
     start_md: float
     end_md: float
 
 
-class PerforationOutput(BaseModel):
+class PerforationOutput(ObjectModel[rips.WellPath]):
     """Output of AddPerforation: perforation interval details."""
 
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    well: rips.WellPath
     start_md: float
     end_md: float
 
@@ -127,7 +110,7 @@ class LoadModel(Task[FilePath, GridCase]):
         ctx.logger.info("Loading model from %s", input.path)
         grid_case = instance.project.load_case(input.path)
         ctx.logger.info("Loaded case '%s' (id=%d)", grid_case.name, grid_case.id)
-        return GridCase(grid_case=grid_case)
+        return GridCase(value=grid_case)
 
 
 class LoadWellPath(Task[FilePath, WellPath]):
@@ -141,7 +124,7 @@ class LoadWellPath(Task[FilePath, WellPath]):
         collection = instance.project.well_path_collection()
         well_path = collection.import_well_path(file_name=input.path)
         ctx.logger.info("Imported well path '%s'", well_path.name)
-        return WellPath(well=well_path)
+        return WellPath(value=well_path)
 
 
 class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
@@ -153,19 +136,19 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
         instance: rips.Instance = ctx.resolve("resinsight")
         ctx.logger.info(
             "Adding perforation to '%s' at MD %.1f-%.1f",
-            input.well.name,
+            input.value.name,
             input.start_md,
             input.end_md,
         )
         collection = instance.project.descendants(rips.WellPathCollection)[0]
         timeline = collection.event_timeline()
         timeline.add_perf_event(
-            well_path=input.well,
+            well_path=input.value,
             start_md=input.start_md,
             end_md=input.end_md,
         )
         return PerforationOutput(
-            well=input.well,
+            value=input.value,
             start_md=input.start_md,
             end_md=input.end_md,
         )
@@ -191,10 +174,10 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         well_path_names: list[str]
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
-        eclipse_case = input.grid_case.grid_case
+        eclipse_case = input.grid_case.value
         well_path_names = [
-            input.perforation_1.well.name,
-            input.perforation_2.well.name,
+            input.perforation_1.value.name,
+            input.perforation_2.value.name,
         ]
         ctx.logger.info(
             "Exporting completions for wells %s to %s",
