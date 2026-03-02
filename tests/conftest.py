@@ -94,6 +94,63 @@ class FanInTask(Task[FanInInput, FanInOutput]):
         return FanInOutput(total=input.a.value + input.b.value)
 
 
+# --- Models and tasks for config_fields testing ---
+
+
+class MergedInput(BaseModel):
+    """Input that takes some fields from upstream and some from config."""
+
+    value: int  # from upstream
+    label: str  # from config
+
+
+class MergedOutput(BaseModel):
+    result: str
+
+
+class MergeTask(Task[MergedInput, MergedOutput]):
+    name = "merge_task"
+
+    def run(self, input: MergedInput, ctx: ExecutionContext) -> MergedOutput:
+        return MergedOutput(result=f"{input.label}:{input.value}")
+
+
+class ConfigOnlyInput(BaseModel):
+    """Input that comes entirely from config."""
+
+    path: str
+    count: int
+
+
+class ConfigOnlyOutput(BaseModel):
+    summary: str
+
+
+class ConfigOnlyTask(Task[ConfigOnlyInput, ConfigOnlyOutput]):
+    name = "config_only_task"
+
+    def run(self, input: ConfigOnlyInput, ctx: ExecutionContext) -> ConfigOnlyOutput:
+        return ConfigOnlyOutput(summary=f"{input.path}x{input.count}")
+
+
+class FanInWithConfigInput(BaseModel):
+    """Fan-in input with one field from upstream and one from config."""
+
+    a: NumberOutput  # from upstream
+    extra: str  # from config
+
+
+class FanInWithConfigOutput(BaseModel):
+    combined: str
+
+
+class FanInWithConfigTask(Task[FanInWithConfigInput, FanInWithConfigOutput]):
+    name = "fan_in_with_config"
+
+    def run(self, input: FanInWithConfigInput, ctx: ExecutionContext) -> FanInWithConfigOutput:
+        return FanInWithConfigOutput(combined=f"{input.extra}:{input.a.value}")
+
+
 # --- Fixtures ---
 
 

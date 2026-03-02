@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from taskekrabbe.task import get_input_type, get_output_type
 
 if TYPE_CHECKING:
+    from taskekrabbe.job import JobConfiguration
     from taskekrabbe.workflow import Workflow
 
 
@@ -19,11 +20,18 @@ def _field_type_label(task_by_name: dict[str, type], upstream_name: str, field_n
     return f".{field_name}: {type_label}"
 
 
-def to_mermaid(workflow: Workflow) -> str:
+def to_mermaid(
+    workflow: Workflow,
+    *,
+    job_configuration: JobConfiguration | None = None,
+) -> str:
     """Generate a Mermaid diagram string for a workflow.
 
     Returns a ``graph TD`` block with a start node, task nodes, and edges
     labeled with the data types flowing between them.
+
+    When *job_configuration* is provided, adds a ``_job_config_`` node with
+    dashed edges to each configured task.
     """
     from taskekrabbe.workflow import _extract_upstream_names
 
@@ -39,9 +47,16 @@ def to_mermaid(workflow: Workflow) -> str:
         has_dependents.update(_extract_upstream_names(deps))
     sinks = [(name, cls) for name, cls in tasks if name not in has_dependents]
 
+    # Collect tasks with config_fields
+    configured_tasks = {name for name, _cls in tasks if workflow.get_config_fields(name)}
+
     # Start and end nodes
     lines.append('    _start_(("start"))')
     lines.append('    _end_(("end"))')
+
+    # JobConfiguration node (if there are configured tasks)
+    if configured_tasks:
+        lines.append('    _job_config_[("JobConfiguration")]')
 
     # Task node definitions (plain labels, no type info)
     for task_name, _task_cls in tasks:
@@ -51,9 +66,10 @@ def to_mermaid(workflow: Workflow) -> str:
     for task_name, task_cls in tasks:
         deps = workflow.get_dependencies(task_name)
         if deps is None:
-            # Root task: edge from start, labeled with input type
-            input_name = get_input_type(task_cls).__name__
-            lines.append(f"    _start_ -->|{input_name}| {task_name}")
+            if task_name not in configured_tasks:
+                # Root task: edge from start, labeled with input type
+                input_name = get_input_type(task_cls).__name__
+                lines.append(f"    _start_ -->|{input_name}| {task_name}")
         elif isinstance(deps, str):
             # Single dependency: labeled with upstream output type
             output_name = get_output_type(task_by_name[deps]).__name__
@@ -75,6 +91,13 @@ def to_mermaid(workflow: Workflow) -> str:
                     lines.append(
                         f"    {upstream_ref} -->|{down_field}: {output_name}| {task_name}"
                     )
+
+    # JobConfiguration dashed edges to configured tasks
+    if configured_tasks:
+        for task_name in sorted(configured_tasks):
+            cf = workflow.get_config_fields(task_name)
+            label = ", ".join(sorted(cf))
+            lines.append(f"    _job_config_ -.->|{label}| {task_name}")
 
     # Sink tasks: edge to end, labeled with output type
     for task_name, task_cls in sinks:

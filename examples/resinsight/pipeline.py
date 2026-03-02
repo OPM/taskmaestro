@@ -16,6 +16,10 @@ ConnectToResInsight ──► LoadModel ──┤     (well_1)        (perf_1)  
 - Linear chains: LoadWellPath -> AddPerforation (x2)
 - Fan-in:        ExportCompletions merges LoadModel + both AddPerforation instances
 
+Per-task configuration: Each task declares what it needs as explicit input
+model fields. A JobConfiguration provides per-task config values, and the
+Runner merges upstream outputs with config values to construct task inputs.
+
 Run:
     source .venv/bin/activate
     python examples/resinsight/pipeline.py              # Python API
@@ -25,12 +29,16 @@ Run:
 
 from __future__ import annotations
 
+from typing import Any
+
 import rips
 from pydantic import BaseModel
 
 from taskekrabbe import (
+    EmptyConfig,
     ExecutionContext,
     Job,
+    JobConfiguration,
     Runner,
     Task,
     Workflow,
@@ -42,23 +50,17 @@ from taskekrabbe.hooks import LoggingHook, TimingHook
 # ---------------------------------------------------------------------------
 
 
-class ResInsightConfig(BaseModel):
-    """Job config: file paths and perforation parameters."""
-
-    egrid_path: str
-    well_path_file_1: str
-    well_path_file_2: str
-    perf_1_start_md: float
-    perf_1_end_md: float
-    perf_2_start_md: float
-    perf_2_end_md: float
-    export_path: str
-
-
 class ConnectionOutput(BaseModel):
     """Output of ConnectToResInsight: the gRPC port."""
 
     port: int
+
+
+class LoadModelInput(BaseModel):
+    """Input for LoadModel: port from upstream, egrid_path from config."""
+
+    port: int
+    egrid_path: str
 
 
 class LoadModelOutput(BaseModel):
@@ -68,10 +70,26 @@ class LoadModelOutput(BaseModel):
     case_name: str
 
 
+class LoadWellPathInput(BaseModel):
+    """Input for LoadWellPath: case info from upstream, well_path_file from config."""
+
+    case_id: int
+    case_name: str
+    well_path_file: str
+
+
 class WellPathOutput(BaseModel):
     """Output of LoadWellPath: imported well path name."""
 
     well_path_name: str
+
+
+class AddPerforationInput(BaseModel):
+    """Input for AddPerforation: well_path_name from upstream, MD range from config."""
+
+    well_path_name: str
+    start_md: float
+    end_md: float
 
 
 class PerforationOutput(BaseModel):
@@ -83,95 +101,82 @@ class PerforationOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Tasks
+# Tasks — each task gets all its data from explicit input fields
 # ---------------------------------------------------------------------------
 
 
-class ConnectToResInsight(Task[ResInsightConfig, ConnectionOutput]):
+class ConnectToResInsight(Task[EmptyConfig, ConnectionOutput]):
     """Connect to a running ResInsight instance and register it in context."""
 
     name = "connect_to_resinsight"
 
-    def run(self, input: ResInsightConfig, ctx: ExecutionContext) -> ConnectionOutput:
+    def run(self, input: EmptyConfig, ctx: ExecutionContext) -> ConnectionOutput:
         ctx.logger.info("Connecting to ResInsight...")
         instance = rips.Instance.find()
         ctx.register("resinsight", instance)
-        ctx.register("egrid_path", input.egrid_path)
-        ctx.register("well_path_file_1", input.well_path_file_1)
-        ctx.register("well_path_file_2", input.well_path_file_2)
-        ctx.register("perf_1_start_md", input.perf_1_start_md)
-        ctx.register("perf_1_end_md", input.perf_1_end_md)
-        ctx.register("perf_2_start_md", input.perf_2_start_md)
-        ctx.register("perf_2_end_md", input.perf_2_end_md)
-        ctx.register("export_path", input.export_path)
         port = int(instance.location.split(":")[1])
         ctx.logger.info("Connected to ResInsight on port %d", port)
         return ConnectionOutput(port=port)
 
 
-class LoadModel(Task[ConnectionOutput, LoadModelOutput]):
+class LoadModel(Task[LoadModelInput, LoadModelOutput]):
     """Load the reservoir model (.egrid) into ResInsight."""
 
     name = "load_model"
 
-    def run(self, input: ConnectionOutput, ctx: ExecutionContext) -> LoadModelOutput:
+    def run(self, input: LoadModelInput, ctx: ExecutionContext) -> LoadModelOutput:
         instance: rips.Instance = ctx.resolve("resinsight")
-        egrid_path: str = ctx.resolve("egrid_path")
-        ctx.logger.info("Loading model from %s", egrid_path)
-        case = instance.project.load_case(egrid_path)
+        ctx.logger.info("Loading model from %s", input.egrid_path)
+        case = instance.project.load_case(input.egrid_path)
         ctx.register("case", case)
         ctx.logger.info("Loaded case '%s' (id=%d)", case.name, case.id)
         return LoadModelOutput(case_id=case.id, case_name=case.name)
 
 
-class LoadWellPath(Task[LoadModelOutput, WellPathOutput]):
+class LoadWellPath(Task[LoadWellPathInput, WellPathOutput]):
     """Import a well path file into ResInsight."""
 
     name = "load_well_path"
-    _ctx_key: str = "well_path_file_1"  # default; overridden via context
 
-    def run(self, input: LoadModelOutput, ctx: ExecutionContext) -> WellPathOutput:
+    def run(self, input: LoadWellPathInput, ctx: ExecutionContext) -> WellPathOutput:
         instance: rips.Instance = ctx.resolve("resinsight")
-        # Use the instance name to look up the right context key
-        well_path_key = f"well_path_file_{self.name.split('_')[-1]}"
-        well_path_file: str = ctx.resolve(well_path_key)
-        ctx.logger.info("Importing well path from %s", well_path_file)
+        ctx.logger.info("Importing well path from %s", input.well_path_file)
         collection = instance.project.well_path_collection()
-        well_path = collection.import_well_path(file_name=well_path_file)
-        ctx.register(f"well_path_{self.name}", well_path)
+        well_path = collection.import_well_path(file_name=input.well_path_file)
         ctx.logger.info("Imported well path '%s'", well_path.name)
         return WellPathOutput(well_path_name=well_path.name)
 
 
-class AddPerforation(Task[WellPathOutput, PerforationOutput]):
+class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
     """Add perforation events to a well path."""
 
     name = "add_perforation"
 
-    def run(self, input: WellPathOutput, ctx: ExecutionContext) -> PerforationOutput:
+    def run(self, input: AddPerforationInput, ctx: ExecutionContext) -> PerforationOutput:
         instance: rips.Instance = ctx.resolve("resinsight")
-        # Derive context keys from instance name (e.g. "add_perf_1" -> "1")
-        suffix = self.name.split("_")[-1]
-        well_path = ctx.resolve(f"well_path_load_well_path_{suffix}")
-        start_md: float = ctx.resolve(f"perf_{suffix}_start_md")
-        end_md: float = ctx.resolve(f"perf_{suffix}_end_md")
         ctx.logger.info(
             "Adding perforation to '%s' at MD %.1f-%.1f",
             input.well_path_name,
-            start_md,
-            end_md,
+            input.start_md,
+            input.end_md,
         )
+        # Look up the well path object by name
+        well_path_obj = None
+        for wp in instance.project.well_path_collection().well_paths():
+            if wp.name == input.well_path_name:
+                well_path_obj = wp
+                break
         collection = instance.project.descendants(rips.WellPathCollection)[0]
         timeline = collection.event_timeline()
         timeline.add_perf_event(
-            well_path=well_path,
-            start_md=start_md,
-            end_md=end_md,
+            well_path=well_path_obj,
+            start_md=input.start_md,
+            end_md=input.end_md,
         )
         return PerforationOutput(
             well_path_name=input.well_path_name,
-            start_md=start_md,
-            end_md=end_md,
+            start_md=input.start_md,
+            end_md=input.end_md,
         )
 
 
@@ -179,7 +184,7 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
     """Fan-in: merge case and perforations, then export completions.
 
     Uses inline Inputs/Outputs inner classes to demonstrate the
-    named-ports fan-in pattern.
+    named-ports fan-in pattern. export_path comes from config.
     """
 
     name = "export_completions"
@@ -188,6 +193,7 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         case: LoadModelOutput
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
+        export_path: str
 
     class Outputs(BaseModel):
         export_file: str
@@ -195,7 +201,6 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
         case = ctx.resolve("case")
-        export_path: str = ctx.resolve("export_path")
         well_path_names = [
             input.perforation_1.well_path_name,
             input.perforation_2.well_path_name,
@@ -203,34 +208,58 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         ctx.logger.info(
             "Exporting completions for wells %s to %s",
             well_path_names,
-            export_path,
+            input.export_path,
         )
         case.export_well_path_completions(
             time_step=0,
             well_path_names=well_path_names,
             file_split="UNIFIED_FILE",
             include_perforations=True,
-            custom_file_name=export_path,
+            custom_file_name=input.export_path,
         )
-        ctx.logger.info("Export complete: %s", export_path)
+        ctx.logger.info("Export complete: %s", input.export_path)
         return self.Outputs(
-            export_file=export_path,
+            export_file=input.export_path,
             well_path_names=well_path_names,
         )
 
 
 # ---------------------------------------------------------------------------
-# Workflow — uses named instances instead of subclasses
+# Workflow — uses named instances and config_fields
 # ---------------------------------------------------------------------------
 
 workflow = (
     Workflow.builder(name="resinsight_completions")
     .add_task(ConnectToResInsight)
-    .add_task(LoadModel, depends_on=ConnectToResInsight)
-    .add_task(LoadWellPath, name="load_well_path_1", depends_on=LoadModel)
-    .add_task(LoadWellPath, name="load_well_path_2", depends_on=LoadModel)
-    .add_task(AddPerforation, name="add_perf_1", depends_on="load_well_path_1")
-    .add_task(AddPerforation, name="add_perf_2", depends_on="load_well_path_2")
+    .add_task(
+        LoadModel,
+        depends_on=ConnectToResInsight,
+        config_fields=["egrid_path"],
+    )
+    .add_task(
+        LoadWellPath,
+        name="load_well_path_1",
+        depends_on=LoadModel,
+        config_fields=["well_path_file"],
+    )
+    .add_task(
+        LoadWellPath,
+        name="load_well_path_2",
+        depends_on=LoadModel,
+        config_fields=["well_path_file"],
+    )
+    .add_task(
+        AddPerforation,
+        name="add_perf_1",
+        depends_on="load_well_path_1",
+        config_fields=["start_md", "end_md"],
+    )
+    .add_task(
+        AddPerforation,
+        name="add_perf_2",
+        depends_on="load_well_path_2",
+        config_fields=["start_md", "end_md"],
+    )
     .add_task(
         ExportCompletions,
         depends_on={
@@ -238,6 +267,7 @@ workflow = (
             "perforation_1": "add_perf_1",
             "perforation_2": "add_perf_2",
         },
+        config_fields=["export_path"],
     )
     .build()
 )
@@ -248,7 +278,7 @@ workflow = (
 # ---------------------------------------------------------------------------
 
 
-def print_results(result: Job[ResInsightConfig], timing: TimingHook, wf: Workflow) -> None:
+def print_results(result: Job[Any], timing: TimingHook, wf: Workflow) -> None:
     """Print pipeline results, timings, and Mermaid diagram."""
     print("=" * 60)
     print("  ResInsight Completions Pipeline - Results")
@@ -275,18 +305,37 @@ def print_results(result: Job[ResInsightConfig], timing: TimingHook, wf: Workflo
 
 def run_python_mode() -> None:
     """Run the pipeline using the Python API."""
-    config = ResInsightConfig(
-        egrid_path="/path/to/model/NORNE_ATW2013.EGRID",
-        well_path_file_1="/path/to/wells/well_1.dev",
-        well_path_file_2="/path/to/wells/well_2.dev",
-        perf_1_start_md=3000.0,
-        perf_1_end_md=3500.0,
-        perf_2_start_md=2800.0,
-        perf_2_end_md=3200.0,
-        export_path="/path/to/output/completions.sch",
+    job_config = JobConfiguration(
+        {
+            "connect_to_resinsight": {},
+            "load_model": {
+                "egrid_path": "/path/to/model/NORNE_ATW2013.EGRID",
+            },
+            "load_well_path_1": {
+                "well_path_file": "/path/to/wells/well_1.dev",
+            },
+            "load_well_path_2": {
+                "well_path_file": "/path/to/wells/well_2.dev",
+            },
+            "add_perf_1": {
+                "start_md": 3000.0,
+                "end_md": 3500.0,
+            },
+            "add_perf_2": {
+                "start_md": 2800.0,
+                "end_md": 3200.0,
+            },
+            "export_completions": {
+                "export_path": "/path/to/output/completions.sch",
+            },
+        }
     )
 
-    job: Job[ResInsightConfig] = Job(workflow=workflow, config=config)
+    job: Job[EmptyConfig] = Job(
+        workflow=workflow,
+        config=EmptyConfig(),
+        job_configuration=job_config,
+    )
     ctx = ExecutionContext()
 
     timing = TimingHook()

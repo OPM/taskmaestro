@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError
 from taskekrabbe.context import ExecutionContext
 from taskekrabbe.exceptions import ConfigLoadError
 from taskekrabbe.hooks.base import BaseHook
-from taskekrabbe.job import Job
+from taskekrabbe.job import EmptyConfig, Job, JobConfiguration
 from taskekrabbe.runner import Runner
 from taskekrabbe.task import Task, get_input_type
 from taskekrabbe.workflow import Workflow, WorkflowBuilder
@@ -206,6 +206,29 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
     # 6. Detect linear vs DAG mode
     has_depends_on = any(tc.depends_on is not None for tc in config.workflow.tasks)
 
+    # 6b. Detect per-task config format early (before building workflow)
+    # Build set of all registered task names for detection
+    all_registered_names: set[str] = set()
+    for task_config in config.workflow.tasks:
+        registered_name = (
+            task_config.name if task_config.name else task_classes[task_config.task].name
+        )
+        all_registered_names.add(registered_name)
+
+    is_per_task_config = bool(raw_input) and all(
+        key in all_registered_names and isinstance(raw_input[key], (dict, type(None)))
+        for key in raw_input
+    )
+
+    # Pre-compute per-task config_fields mapping (task_name -> field names)
+    per_task_data: dict[str, dict[str, Any]] = {}
+    per_task_cfg_fields: dict[str, list[str]] = {}
+    if is_per_task_config:
+        for task_name, task_values in raw_input.items():
+            per_task_data[task_name] = dict(task_values) if task_values else {}
+            if task_values:
+                per_task_cfg_fields[task_name] = list(task_values.keys())
+
     # 7. Resolve result_task
     result_task_name: str | None = None
     if config.workflow.result_task:
@@ -226,6 +249,10 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
             tasks=task_list,
             result_task=result_task_cls,
         )
+        # Inject config_fields post-build for linear mode (no validation for linear)
+        if is_per_task_config:
+            for task_name, fields in per_task_cfg_fields.items():
+                workflow._config_fields[task_name] = set(fields)
     else:
         # DAG mode: use WorkflowBuilder
         builder = WorkflowBuilder(
@@ -238,11 +265,15 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
             registered_name = name_lookup[task_config.task]
             # Use task_config.name to pass to add_task (None means use class default)
             instance_name = task_config.name
+            # Derive config_fields from per-task config if applicable
+            cfg_fields = per_task_cfg_fields.get(registered_name)
             if deps is None:
-                builder.add_task(cls, name=instance_name)
+                builder.add_task(cls, name=instance_name, config_fields=cfg_fields)
             elif isinstance(deps, str):
                 resolved_dep = _resolve_yaml_dep(deps, task_config.task)
-                builder.add_task(cls, name=instance_name, depends_on=resolved_dep)
+                builder.add_task(
+                    cls, name=instance_name, depends_on=resolved_dep, config_fields=cfg_fields
+                )
             elif isinstance(deps, list):
                 # Field-ref: [task_path, field_name]
                 if len(deps) != 2 or not all(isinstance(e, str) for e in deps):
@@ -256,6 +287,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
                     cls,
                     name=instance_name,
                     depends_on=(resolved_dep, field_name),
+                    config_fields=cfg_fields,
                 )
             elif isinstance(deps, dict):
                 fan_in: dict[
@@ -277,30 +309,37 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
                     else:
                         resolved_dep = _resolve_yaml_dep(upstream_ref, task_config.task)
                         fan_in[field_name] = resolved_dep
-                builder.add_task(cls, name=instance_name, depends_on=fan_in)
+                builder.add_task(
+                    cls, name=instance_name, depends_on=fan_in, config_fields=cfg_fields
+                )
         try:
             workflow = builder.build()
         except Exception as exc:
             raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
 
-    # 9. Validate input against root task input type
-    root_tasks = [
-        task_classes[tc.task]
-        for tc in config.workflow.tasks
-        if tc.depends_on is None and has_depends_on
-    ]
-    if not has_depends_on:
-        # Linear mode: first task is the root
-        root_tasks = [task_classes[config.workflow.tasks[0].task]]
+    # 9. Validate input and build Job
+    job: Job[Any]
+    if is_per_task_config:
+        job_configuration = JobConfiguration(per_task_data)
+        job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
+    else:
+        # Flat config mode (backward compat)
+        root_tasks = [
+            task_classes[tc.task]
+            for tc in config.workflow.tasks
+            if tc.depends_on is None and has_depends_on
+        ]
+        if not has_depends_on:
+            # Linear mode: first task is the root
+            root_tasks = [task_classes[config.workflow.tasks[0].task]]
 
-    input_type = get_input_type(root_tasks[0])
-    try:
-        validated_input = input_type.model_validate(raw_input)
-    except ValidationError as exc:
-        raise ConfigLoadError(f"Input validation error: {exc}") from exc
+        input_type = get_input_type(root_tasks[0])
+        try:
+            validated_input = input_type.model_validate(raw_input)
+        except ValidationError as exc:
+            raise ConfigLoadError(f"Input validation error: {exc}") from exc
 
-    # 10. Build Job
-    job: Job[Any] = Job(workflow, validated_input)
+        job = Job(workflow, validated_input)
 
     # 11. Instantiate hooks
     hooks: list[BaseHook] = []

@@ -15,9 +15,13 @@ from taskekrabbe.exceptions import CycleDetectedError, IncompleteInputError
 from tests.conftest import (
     AddOne,
     AddOneB,
+    ConfigOnlyTask,
     Double,
     FanInOutput,
     FanInTask,
+    FanInWithConfigTask,
+    MergedOutput,
+    MergeTask,
     NumberInput,
     NumberOutput,
     Stringify,
@@ -599,3 +603,165 @@ class TestNamedTaskInstances:
             .build()
         )
         assert wf.result_task is FanInTask
+
+
+class TestConfigFields:
+    """Tests for config_fields support in workflow validation."""
+
+    def test_root_task_with_config_fields(self) -> None:
+        """Root task with config_fields covering all required fields validates."""
+        wf = (
+            Workflow.builder("root_cfg")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+        assert wf.get_config_fields("config_only_task") == {"path", "count"}
+
+    def test_root_task_config_fields_incomplete_raises(self) -> None:
+        """Root task with config_fields not covering all required fields raises."""
+        with pytest.raises(IncompleteInputError, match="Required field 'count'"):
+            (Workflow.builder("bad").add_task(ConfigOnlyTask, config_fields=["path"]).build())
+
+    def test_root_task_config_field_not_on_model_raises(self) -> None:
+        """Config field that doesn't exist on input model raises."""
+        with pytest.raises(WorkflowDefinitionError, match="Config field 'nonexistent'"):
+            (
+                Workflow.builder("bad")
+                .add_task(
+                    ConfigOnlyTask,
+                    config_fields=["path", "count", "nonexistent"],
+                )
+                .build()
+            )
+
+    def test_single_dep_with_config_fields(self) -> None:
+        """Single dep + config_fields: upstream fields + config cover all required."""
+        wf = (
+            Workflow.builder("merge")
+            .add_task(AddOne)
+            .add_task(
+                MergeTask,
+                depends_on=AddOne,
+                config_fields=["label"],
+            )
+            .build()
+        )
+        assert wf.get_config_fields("merge_task") == {"label"}
+
+    def test_single_dep_with_config_fields_incomplete_raises(self) -> None:
+        """Single dep + config_fields not covering required field raises."""
+
+        class NeedsMoreInput(BaseModel):
+            value: int
+            label: str
+            extra: str
+
+        class NeedsMoreTask(Task[NeedsMoreInput, MergedOutput]):
+            name = "needs_more"
+
+            def run(self, input: NeedsMoreInput, ctx: ExecutionContext) -> MergedOutput:
+                return MergedOutput(result="")
+
+        with pytest.raises(IncompleteInputError, match="Required field 'extra'"):
+            (
+                Workflow.builder("bad")
+                .add_task(AddOne)
+                .add_task(
+                    NeedsMoreTask,
+                    depends_on=AddOne,
+                    config_fields=["label"],
+                )
+                .build()
+            )
+
+    def test_single_dep_config_field_not_on_model_raises(self) -> None:
+        """Config field not on downstream input model raises."""
+        with pytest.raises(WorkflowDefinitionError, match="Config field 'nonexistent'"):
+            (
+                Workflow.builder("bad")
+                .add_task(AddOne)
+                .add_task(
+                    MergeTask,
+                    depends_on=AddOne,
+                    config_fields=["label", "nonexistent"],
+                )
+                .build()
+            )
+
+    def test_single_dep_with_config_type_mismatch_raises(self) -> None:
+        """Upstream output field type incompatible with downstream input field raises."""
+
+        class BadDownInput(BaseModel):
+            value: str  # upstream provides int, this expects str
+            label: str
+
+        class BadDownTask(Task[BadDownInput, MergedOutput]):
+            name = "bad_down"
+
+            def run(self, input: BadDownInput, ctx: ExecutionContext) -> MergedOutput:
+                return MergedOutput(result="")
+
+        with pytest.raises(WorkflowDefinitionError, match="Type mismatch"):
+            (
+                Workflow.builder("bad")
+                .add_task(AddOne)
+                .add_task(
+                    BadDownTask,
+                    depends_on=AddOne,
+                    config_fields=["label"],
+                )
+                .build()
+            )
+
+    def test_fan_in_with_config_fields(self) -> None:
+        """Fan-in + config_fields: mapped fields + config cover all required."""
+        wf = (
+            Workflow.builder("fan_cfg")
+            .add_task(AddOne)
+            .add_task(
+                FanInWithConfigTask,
+                depends_on={"a": AddOne},
+                config_fields=["extra"],
+            )
+            .build()
+        )
+        assert wf.get_config_fields("fan_in_with_config") == {"extra"}
+
+    def test_fan_in_with_config_fields_incomplete_raises(self) -> None:
+        """Fan-in + config_fields not covering a required field raises."""
+        with pytest.raises(IncompleteInputError, match="Required field 'extra'"):
+            (
+                Workflow.builder("bad")
+                .add_task(AddOne)
+                .add_task(
+                    FanInWithConfigTask,
+                    depends_on={"a": AddOne},
+                    # missing config_fields=["extra"]
+                )
+                .build()
+            )
+
+    def test_fan_in_config_field_not_on_model_raises(self) -> None:
+        """Config field not on fan-in input model raises."""
+        with pytest.raises(WorkflowDefinitionError, match="Config field 'bogus'"):
+            (
+                Workflow.builder("bad")
+                .add_task(AddOne)
+                .add_task(
+                    FanInWithConfigTask,
+                    depends_on={"a": AddOne},
+                    config_fields=["extra", "bogus"],
+                )
+                .build()
+            )
+
+    def test_backward_compat_no_config_fields(self) -> None:
+        """Workflows without config_fields work as before."""
+        wf = Workflow(name="compat", tasks=[AddOne, Double])
+        assert wf.get_config_fields("add_one") == set()
+        assert wf.get_config_fields("double") == set()
+
+    def test_get_config_fields_default(self) -> None:
+        """get_config_fields returns empty set for unknown task."""
+        wf = Workflow(name="empty")
+        assert wf.get_config_fields("nonexistent") == set()

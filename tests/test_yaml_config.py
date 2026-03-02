@@ -953,7 +953,7 @@ workflow:
 """,
         )
         in_path = _write_input_yaml(tmp_path, "text: hello\n")
-        with pytest.raises(ConfigLoadError, match="result_task.*not found"):
+        with pytest.raises(ConfigLoadError, match=r"result_task.*not found"):
             load_workflow_from_yaml(wf_path, in_path)
 
     def test_named_result_task(self, tmp_path: Path) -> None:
@@ -1017,3 +1017,139 @@ class TestCoerceHookParams:
         params = _coerce_hook_params(LoggingHook, {"level": 20, "unknown": True})
         with pytest.raises(TypeError):
             LoggingHook(**params)
+
+
+# ============================================================
+# TestPerTaskConfig
+# ============================================================
+
+
+class PerTaskInput(BaseModel):
+    """Input for per-task config test: root task taking config values."""
+
+    egrid_path: str
+    flag: bool = False
+
+
+class PerTaskOutput(BaseModel):
+    path: str
+    flag: bool
+
+
+class PerTaskRoot(Task[PerTaskInput, PerTaskOutput]):
+    name = "per_task_root"
+
+    def run(self, input: PerTaskInput, ctx: ExecutionContext) -> PerTaskOutput:
+        return PerTaskOutput(path=input.egrid_path, flag=input.flag)
+
+
+class DownstreamInput(BaseModel):
+    path: str
+    flag: bool
+    label: str
+
+
+class DownstreamOutput(BaseModel):
+    result: str
+
+
+class PerTaskDownstream(Task[DownstreamInput, DownstreamOutput]):
+    name = "per_task_downstream"
+
+    def run(self, input: DownstreamInput, ctx: ExecutionContext) -> DownstreamOutput:
+        return DownstreamOutput(result=f"{input.label}:{input.path}:{input.flag}")
+
+
+class TestPerTaskConfig:
+    """Tests for per-task YAML config format."""
+
+    def test_per_task_format_detection(self, tmp_path: Path) -> None:
+        """Input YAML with task-name keys triggers per-task config mode."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: per_task_test
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(
+            tmp_path,
+            """\
+per_task_root:
+  egrid_path: "/data/test.egrid"
+""",
+        )
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.path == "/data/test.egrid"  # type: ignore[union-attr]
+
+    def test_per_task_with_dag(self, tmp_path: Path) -> None:
+        """Per-task config with a DAG workflow merging upstream + config."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: per_task_dag
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+    - task: {THIS_MODULE}.PerTaskDownstream
+      depends_on: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(
+            tmp_path,
+            """\
+per_task_root:
+  egrid_path: "/data/model.egrid"
+per_task_downstream:
+  label: "my_label"
+""",
+        )
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.result == "my_label:/data/model.egrid:False"  # type: ignore[union-attr]
+
+    def test_flat_config_backward_compat(self, tmp_path: Path) -> None:
+        """Flat config format still works when keys don't match task names."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: flat_compat
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.text == "OLLEH"  # type: ignore[union-attr]
+
+    def test_per_task_empty_config(self, tmp_path: Path) -> None:
+        """Task with empty config dict ({}) in per-task format works."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: empty_cfg
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        # null values treated same as empty dict
+        in_path = _write_input_yaml(
+            tmp_path,
+            """\
+per_task_root:
+  egrid_path: "/data/test.egrid"
+""",
+        )
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED

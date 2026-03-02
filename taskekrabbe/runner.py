@@ -53,18 +53,41 @@ class Runner:
             job_alarm_set = self._set_alarm(timeout_seconds, "Job")
 
         outputs: dict[str, BaseModel] = {}
+        job_config = job.job_configuration
 
         try:
             for task_name, task_cls in workflow.topological_order():
                 task = task_cls()
                 task.name = task_name  # instance-level override for named instances
                 deps = workflow.get_dependencies(task_name)
+                config_fields = workflow.get_config_fields(task_name)
+                config_values = (
+                    job_config.get_config_for_task(task_name)
+                    if job_config and config_fields
+                    else {}
+                )
 
                 # Assemble input based on dependency type
                 if deps is None:
-                    task_input = job.config
+                    if config_values:
+                        # Root task with config: build input from config values
+                        input_type = get_input_type(task_cls)
+                        task_input = input_type.model_validate(config_values)
+                    else:
+                        task_input = job.config
                 elif isinstance(deps, str):
-                    task_input = outputs[deps]
+                    if config_values:
+                        # Single dep with config: decompose upstream, merge with config
+                        input_type = get_input_type(task_cls)
+                        upstream_data = outputs[deps].model_dump()
+                        down_fields = input_type.model_fields
+                        merged: dict[str, object] = {
+                            k: v for k, v in upstream_data.items() if k in down_fields
+                        }
+                        merged.update(config_values)
+                        task_input = input_type.model_validate(merged)
+                    else:
+                        task_input = outputs[deps]
                 elif isinstance(deps, tuple):
                     upstream_name, field_name = deps
                     task_input = getattr(outputs[upstream_name], field_name)
@@ -77,7 +100,9 @@ class Runner:
                             field_values[fname] = getattr(outputs[up_name], up_field)
                         else:
                             field_values[fname] = outputs[upstream_ref]
-                    task_input = input_type(**field_values)
+                    if config_values:
+                        field_values.update(config_values)
+                    task_input = input_type.model_validate(field_values)
                 else:
                     task_input = job.config  # pragma: no cover
 

@@ -6,8 +6,10 @@ import pytest
 from pydantic import BaseModel
 
 from taskekrabbe import (
+    EmptyConfig,
     ExecutionContext,
     Job,
+    JobConfiguration,
     JobStatus,
     Runner,
     Task,
@@ -18,9 +20,12 @@ from taskekrabbe.job import TaskStatus
 from tests.conftest import (
     AddOne,
     AddOneB,
+    ConfigOnlyTask,
     Double,
     FailingTask,
     FanInTask,
+    FanInWithConfigTask,
+    MergeTask,
     NumberInput,
     NumberOutput,
     SlowTask,
@@ -349,3 +354,79 @@ class TestNamedTaskInstanceExecution:
         assert result.status == JobStatus.COMPLETED
         # Both branches add 1 to 10 = 11, total = 22
         assert result.result.total == 22  # type: ignore[union-attr]
+
+
+class TestConfigFieldsExecution:
+    """Tests for config_fields merging during execution."""
+
+    def test_root_task_from_config(self, ctx: ExecutionContext) -> None:
+        """Root task input is built entirely from JobConfiguration."""
+        wf = (
+            Workflow.builder("root_cfg")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+        jc = JobConfiguration({"config_only_task": {"path": "/data", "count": 7}})
+        job = Job(wf, EmptyConfig(), job_configuration=jc)
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.summary == "/datax7"  # type: ignore[union-attr]
+
+    def test_single_dep_merge(self, ctx: ExecutionContext) -> None:
+        """Single dep + config: upstream output fields merged with config values."""
+        wf = (
+            Workflow.builder("merge")
+            .add_task(AddOne)
+            .add_task(
+                MergeTask,
+                depends_on=AddOne,
+                config_fields=["label"],
+            )
+            .build()
+        )
+        jc = JobConfiguration({"merge_task": {"label": "result"}})
+        job = Job(wf, NumberInput(value=5), job_configuration=jc)
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        # AddOne: 5+1=6, MergeTask: "result:6"
+        assert result.result.result == "result:6"  # type: ignore[union-attr]
+
+    def test_fan_in_merge(self, ctx: ExecutionContext) -> None:
+        """Fan-in + config: mapped fields merged with config values."""
+        wf = (
+            Workflow.builder("fan_cfg")
+            .add_task(AddOne)
+            .add_task(
+                FanInWithConfigTask,
+                depends_on={"a": AddOne},
+                config_fields=["extra"],
+            )
+            .build()
+        )
+        jc = JobConfiguration({"fan_in_with_config": {"extra": "hello"}})
+        job = Job(wf, NumberInput(value=3), job_configuration=jc)
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        # AddOne: 3+1=4, FanInWithConfig: "hello:4"
+        assert result.result.combined == "hello:4"  # type: ignore[union-attr]
+
+    def test_backward_compat_no_config(self, ctx: ExecutionContext) -> None:
+        """Workflow without config_fields runs normally."""
+        wf = Workflow(name="compat", tasks=[AddOne, Double])
+        job = Job(wf, NumberInput(value=5))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.value == 12  # type: ignore[union-attr]
+
+    def test_config_only_root_chain(self, ctx: ExecutionContext) -> None:
+        """Root from config feeds into a downstream task."""
+        wf = (
+            Workflow.builder("chain")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+        jc = JobConfiguration({"config_only_task": {"path": "/test", "count": 2}})
+        job = Job(wf, EmptyConfig(), job_configuration=jc)
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.summary == "/testx2"  # type: ignore[union-attr]

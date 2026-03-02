@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Union
+from typing import TYPE_CHECKING, Any, Union
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from taskekrabbe.job import JobConfiguration
 
 from taskekrabbe.exceptions import (
     CycleDetectedError,
@@ -57,6 +60,7 @@ class Workflow:
         self.name = name
         self._tasks: dict[str, type[Task[Any, Any]]] = {}
         self._dependencies: dict[str, StoredDeps] = {}
+        self._config_fields: dict[str, set[str]] = {}
         self._result_task_name: str | None = None
 
         if tasks:
@@ -125,6 +129,10 @@ class Workflow:
         """Return the dependency spec for a task."""
         return self._dependencies[task_name]
 
+    def get_config_fields(self, task_name: str) -> set[str]:
+        """Return the set of config field names for a task, or empty set."""
+        return self._config_fields.get(task_name, set())
+
     def _validate(self) -> None:
         self._validate_unique_names()
         self._validate_references()
@@ -179,20 +187,77 @@ class Workflow:
         """Validate type compatibility for all edges."""
         for name, deps in self._dependencies.items():
             task_cls = self._tasks[name]
+            cf = self._config_fields.get(name, set())
             if deps is None:
-                # Root task — validated at Job creation time
+                # Root task — validated at Job creation time, or via config_fields
+                if cf:
+                    downstream_input = get_input_type(task_cls)
+                    model_fields = downstream_input.model_fields
+                    # Validate config_fields cover all required input fields
+                    for field_name, field_info in model_fields.items():
+                        if field_name not in cf and field_info.is_required():
+                            raise IncompleteInputError(
+                                f"Required field '{field_name}' on "
+                                f"{downstream_input.__name__} is not covered by "
+                                f"config_fields for root task '{name}'"
+                            )
+                    # Validate config field names exist on the model
+                    for field_name in cf:
+                        if field_name not in model_fields:
+                            raise WorkflowDefinitionError(
+                                f"Config field '{field_name}' not found on "
+                                f"{downstream_input.__name__} (input of '{name}')"
+                            )
                 continue
             elif isinstance(deps, str):
                 # Single dependency (whole output)
                 upstream_cls = self._tasks[deps]
                 upstream_output = get_output_type(upstream_cls)
                 downstream_input = get_input_type(task_cls)
-                if upstream_output is not downstream_input:
-                    raise WorkflowDefinitionError(
-                        f"Type mismatch: {deps} outputs "
-                        f"{upstream_output.__name__} but {name} expects "
-                        f"{downstream_input.__name__}"
-                    )
+                if cf:
+                    # With config_fields: check upstream output fields exist in
+                    # downstream input with compatible types, and that upstream
+                    # fields + config_fields cover all required fields
+                    up_fields = upstream_output.model_fields
+                    down_fields = downstream_input.model_fields
+                    # Validate config field names exist on the model
+                    for field_name in cf:
+                        if field_name not in down_fields:
+                            raise WorkflowDefinitionError(
+                                f"Config field '{field_name}' not found on "
+                                f"{downstream_input.__name__} (input of '{name}')"
+                            )
+                    # Check upstream output fields that match downstream input
+                    for field_name, field_info in up_fields.items():
+                        if field_name in down_fields:
+                            up_annotation = field_info.annotation
+                            down_annotation = down_fields[field_name].annotation
+                            if (
+                                up_annotation is not None
+                                and down_annotation is not None
+                                and not issubclass(up_annotation, down_annotation)
+                            ):
+                                raise WorkflowDefinitionError(
+                                    f"Type mismatch: {deps}.{field_name} is "
+                                    f"{up_annotation.__name__} but {name}.{field_name} "
+                                    f"expects {down_annotation.__name__}"
+                                )
+                    # Check all required fields are covered by upstream or config
+                    covered = set(up_fields.keys()) | cf
+                    for field_name, field_info in down_fields.items():
+                        if field_name not in covered and field_info.is_required():
+                            raise IncompleteInputError(
+                                f"Required field '{field_name}' on "
+                                f"{downstream_input.__name__} is not covered by "
+                                f"upstream output or config_fields"
+                            )
+                else:
+                    if upstream_output is not downstream_input:
+                        raise WorkflowDefinitionError(
+                            f"Type mismatch: {deps} outputs "
+                            f"{upstream_output.__name__} but {name} expects "
+                            f"{downstream_input.__name__}"
+                        )
             elif isinstance(deps, tuple):
                 # Single dependency, specific output field
                 upstream_name, field_name = deps
@@ -249,9 +314,17 @@ class Workflow:
                             f"on {downstream_input.__name__} expects "
                             f"{field_annotation.__name__}"
                         )
-                # Check all required fields are covered
+                # Validate config field names exist on the model
+                for field_name in cf:
+                    if field_name not in model_fields:
+                        raise WorkflowDefinitionError(
+                            f"Config field '{field_name}' not found on "
+                            f"{downstream_input.__name__} (input of '{name}')"
+                        )
+                # Check all required fields are covered by deps or config_fields
+                covered = set(deps.keys()) | cf
                 for field_name, field_info in model_fields.items():
-                    if field_name not in deps and field_info.is_required():
+                    if field_name not in covered and field_info.is_required():
                         raise IncompleteInputError(
                             f"Required field '{field_name}' on "
                             f"{downstream_input.__name__} is not mapped to any "
@@ -270,11 +343,11 @@ class Workflow:
                     f"({sinks}); specify result_task explicitly"
                 )
 
-    def to_mermaid(self) -> str:
+    def to_mermaid(self, *, job_configuration: JobConfiguration | None = None) -> str:
         """Return a Mermaid diagram string for this workflow."""
         from taskekrabbe.visualization import to_mermaid
 
-        return to_mermaid(self)
+        return to_mermaid(self, job_configuration=job_configuration)
 
     def _find_sinks(self) -> list[str]:
         """Return task names with no downstream dependents."""
@@ -297,6 +370,7 @@ class WorkflowBuilder:
         self._workflow.name = name
         self._workflow._tasks = {}
         self._workflow._dependencies = {}
+        self._workflow._config_fields = {}
         self._workflow._result_task_name = None
         # Store the raw result_task ref for resolution at build() time
         self._result_task_ref: type[Task[Any, Any]] | str | None = result_task
@@ -347,6 +421,7 @@ class WorkflowBuilder:
             | dict[str, type[Task[Any, Any]] | str | tuple[type[Task[Any, Any]] | str, str]]
             | None
         ) = None,
+        config_fields: list[str] | None = None,
     ) -> WorkflowBuilder:
         """Add a task to the DAG. Returns self for chaining.
 
@@ -390,6 +465,9 @@ class WorkflowBuilder:
             # Class reference
             resolved_name = self._resolve_dep_name(depends_on)
             wf._dependencies[task_name] = resolved_name
+
+        if config_fields is not None:
+            wf._config_fields[task_name] = set(config_fields)
 
         return self
 

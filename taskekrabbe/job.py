@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
 
@@ -42,6 +42,33 @@ class TaskResult:
     error: str | None = None
 
 
+class EmptyConfig(BaseModel):
+    """Sentinel config for workflows where all root tasks use JobConfiguration."""
+
+
+class JobConfiguration:
+    """Per-task configuration values, mapping task names to config field dicts.
+
+    Used to provide static configuration values (from YAML or code) that get
+    merged with upstream outputs when constructing task inputs.
+    """
+
+    def __init__(self, config: dict[str, dict[str, Any]]) -> None:
+        self._config = config
+
+    def get_config_for_task(self, name: str) -> dict[str, Any]:
+        """Return config values for a task, or empty dict if none."""
+        return dict(self._config.get(name, {}))
+
+    def configured_tasks(self) -> set[str]:
+        """Return set of task names that have configuration."""
+        return set(self._config.keys())
+
+    def config_fields_for_task(self, name: str) -> set[str]:
+        """Return set of field names configured for a task."""
+        return set(self._config.get(name, {}).keys())
+
+
 C = TypeVar("C", bound=BaseModel)
 
 
@@ -52,9 +79,16 @@ class Job(Generic[C]):
     Validates that the config type matches the input type of all root tasks.
     """
 
-    def __init__(self, workflow: Workflow, config: C) -> None:
+    def __init__(
+        self,
+        workflow: Workflow,
+        config: C,
+        *,
+        job_configuration: JobConfiguration | None = None,
+    ) -> None:
         self.workflow = workflow
         self.config: C = config
+        self.job_configuration = job_configuration
         self.status: JobStatus = JobStatus.PENDING
         self.result: BaseModel | None = None
         self.error: str | None = None
@@ -69,6 +103,10 @@ class Job(Generic[C]):
         """Validate that config type matches the input type of all root tasks."""
         for task_name, deps in self.workflow._dependencies.items():
             if deps is None:
+                # Skip validation for root tasks that have config_fields
+                config_fields = self.workflow.get_config_fields(task_name)
+                if config_fields:
+                    continue
                 task_cls = self.workflow._tasks[task_name]
                 expected_input = get_input_type(task_cls)
                 if not isinstance(config, expected_input):

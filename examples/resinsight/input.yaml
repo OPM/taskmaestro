@@ -1,13 +1,22 @@
-# Input data for the ResInsight Completions Pipeline
+# Per-task input data for the ResInsight Completions Pipeline
+#
+# Each top-level key is a task name, with its configuration values.
 #
 # Run:
 #   python examples/resinsight/pipeline.py --yaml --input input.yaml
 
-egrid_path: "/home/resinsight/norne/NORNE.EGRID"
-well_path_file_1: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/B-2H.json"
-well_path_file_2: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/C-4H.json"
-perf_1_start_md: 3000.0
-perf_1_end_md: 3500.0
-perf_2_start_md: 2800.0
-perf_2_end_md: 3200.0
-export_path: "/tmp/completions.txt"
+connect_to_resinsight: {}
+load_model:
+  egrid_path: "/home/resinsight/norne/NORNE.EGRID"
+load_well_path_1:
+  well_path_file: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/B-2H.json"
+load_well_path_2:
+  well_path_file: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/C-4H.json"
+add_perf_1:
+  start_md: 3000.0
+  end_md: 3500.0
+add_perf_2:
+  start_md: 2800.0
+  end_md: 3200.0
+export_completions:
+  export_path: "/tmp/completions.txt"

@@ -227,3 +227,79 @@ class TestSingleTask:
         lines = result.strip().splitlines()
         edge_lines = [line for line in lines if "-->" in line]
         assert len(edge_lines) == 2
+
+
+class TestConfigFieldsVisualization:
+    """Tests for JobConfiguration node and dashed edges in Mermaid output."""
+
+    def test_config_fields_add_job_config_node(self) -> None:
+        """Workflow with config_fields shows _job_config_ node."""
+        from tests.conftest import AddOne, MergeTask
+
+        wf = (
+            Workflow.builder("viz_cfg")
+            .add_task(AddOne)
+            .add_task(
+                MergeTask,
+                depends_on=AddOne,
+                config_fields=["label"],
+            )
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        # Job config node present
+        assert '_job_config_[("JobConfiguration")]' in result
+        # Dashed edge to configured task
+        assert "_job_config_ -.->|label| merge_task" in result
+
+    def test_config_fields_root_task_no_start_edge(self) -> None:
+        """Root task with config_fields should NOT have a _start_ edge."""
+        from tests.conftest import ConfigOnlyTask
+
+        wf = (
+            Workflow.builder("viz_root_cfg")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        # No start edge for configured root task
+        assert "_start_ -->|" not in result
+        # But job config node and dashed edge are present
+        assert '_job_config_[("JobConfiguration")]' in result
+        assert "_job_config_ -.->|" in result
+
+    def test_no_config_fields_no_extra_node(self) -> None:
+        """Workflow without config_fields has no _job_config_ node."""
+        wf = Workflow("no_cfg", [WordStats])
+        result = to_mermaid(wf)
+
+        assert "_job_config_" not in result
+        assert "-.->|" not in result
+
+    def test_multiple_configured_tasks(self) -> None:
+        """Multiple tasks with config_fields all get dashed edges."""
+        from tests.conftest import (
+            AddOne,
+            ConfigOnlyTask,
+            MergeTask,
+        )
+
+        wf = (
+            Workflow.builder("multi_cfg", result_task=MergeTask)
+            .add_task(ConfigOnlyTask, name="root_cfg", config_fields=["path", "count"])
+            .add_task(AddOne)
+            .add_task(
+                MergeTask,
+                depends_on=AddOne,
+                config_fields=["label"],
+            )
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        assert '_job_config_[("JobConfiguration")]' in result
+        # Dashed edges to both configured tasks
+        assert "_job_config_ -.->|label| merge_task" in result
+        assert "_job_config_ -.->|count, path| root_cfg" in result

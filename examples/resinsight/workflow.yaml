@@ -1,6 +1,9 @@
 # ResInsight Completions Pipeline — YAML workflow configuration
 # Equivalent to the Python-defined DAG in examples/resinsight/pipeline.py
 #
+# Uses per-task configuration: each task's config values are provided
+# in input.yaml keyed by task name, and merged with upstream outputs.
+#
 # Run:
 #   python examples/resinsight/pipeline.py --yaml
 #   python examples/resinsight/pipeline.py --yaml workflow.yaml --input input.yaml

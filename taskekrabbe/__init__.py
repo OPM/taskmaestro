@@ -12,7 +12,7 @@ from taskekrabbe.exceptions import (
     WorkflowDefinitionError,
     WorkflowRunnerError,
 )
-from taskekrabbe.job import Job, JobStatus, TaskResult, TaskStatus
+from taskekrabbe.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
 from taskekrabbe.runner import Runner
 from taskekrabbe.task import Task
 from taskekrabbe.visualization import to_mermaid
@@ -26,9 +26,11 @@ from taskekrabbe.yaml_config import (
 __all__ = [
     "ConfigLoadError",
     "CycleDetectedError",
+    "EmptyConfig",
     "ExecutionContext",
     "IncompleteInputError",
     "Job",
+    "JobConfiguration",
     "JobStateError",
     "JobStatus",
     "LoadedWorkflow",
