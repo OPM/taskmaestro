@@ -16,9 +16,9 @@ independently to BuildReport via output field routing.
 
 Run:
     source .venv/bin/activate
-    python example.py                                              # Python API
-    python example.py --yaml                                       # YAML config (defaults)
-    python example.py --yaml example.yaml --input example_input.yaml  # custom files
+    python examples/text_analysis/pipeline.py                      # Python API
+    python examples/text_analysis/pipeline.py --yaml               # YAML config (defaults)
+    python examples/text_analysis/pipeline.py --yaml workflow.yaml --input input.yaml
 """
 
 from __future__ import annotations
@@ -117,6 +117,7 @@ class AnalysisReport(BaseModel):
 # Tasks
 # ---------------------------------------------------------------------------
 
+
 class PrepareText(Task[TextInput, TextContent]):
     """Passthrough task: provides text content to downstream tasks."""
 
@@ -135,17 +136,101 @@ class GenerateStopWords(Task[TextInput, StopWordsOutput]):
     def run(self, input: TextInput, ctx: ExecutionContext) -> StopWordsOutput:
         ctx.logger.info("Generating stop words list")
         stop_words = [
-            "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
-            "have", "has", "had", "do", "does", "did", "will", "would", "could",
-            "should", "may", "might", "shall", "can", "need", "dare", "ought",
-            "to", "of", "in", "for", "on", "with", "at", "by", "from", "as",
-            "into", "through", "during", "before", "after", "and", "but", "or",
-            "nor", "not", "so", "yet", "both", "either", "neither", "each",
-            "every", "all", "any", "few", "more", "most", "other", "some",
-            "such", "no", "only", "own", "same", "than", "too", "very",
-            "just", "because", "it", "its", "this", "that", "these", "those",
-            "i", "me", "my", "we", "our", "you", "your", "he", "him", "his",
-            "she", "her", "they", "them", "their", "what", "which", "who",
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "being",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "will",
+            "would",
+            "could",
+            "should",
+            "may",
+            "might",
+            "shall",
+            "can",
+            "need",
+            "dare",
+            "ought",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "as",
+            "into",
+            "through",
+            "during",
+            "before",
+            "after",
+            "and",
+            "but",
+            "or",
+            "nor",
+            "not",
+            "so",
+            "yet",
+            "both",
+            "either",
+            "neither",
+            "each",
+            "every",
+            "all",
+            "any",
+            "few",
+            "more",
+            "most",
+            "other",
+            "some",
+            "such",
+            "no",
+            "only",
+            "own",
+            "same",
+            "than",
+            "too",
+            "very",
+            "just",
+            "because",
+            "it",
+            "its",
+            "this",
+            "that",
+            "these",
+            "those",
+            "i",
+            "me",
+            "my",
+            "we",
+            "our",
+            "you",
+            "your",
+            "he",
+            "him",
+            "his",
+            "she",
+            "her",
+            "they",
+            "them",
+            "their",
+            "what",
+            "which",
+            "who",
         ]
         return StopWordsOutput(stop_words=stop_words)
 
@@ -343,23 +428,35 @@ def run_python_mode() -> None:
     # Build the DAG workflow
     workflow = (
         Workflow.builder(name="text_analysis")
-        .add_task(PrepareText)                               # root (receives TextInput)
-        .add_task(GenerateStopWords)                         # root (receives TextInput)
-        .add_task(ComputeWordStats, depends_on={             # fan-in
-            "content": PrepareText,
-            "stop_words": GenerateStopWords,
-        })
-        .add_task(ExtractKeywords, depends_on={              # fan-in
-            "content": PrepareText,
-            "stop_words": GenerateStopWords,
-        })
+        .add_task(PrepareText)  # root (receives TextInput)
+        .add_task(GenerateStopWords)  # root (receives TextInput)
+        .add_task(
+            ComputeWordStats,
+            depends_on={  # fan-in
+                "content": PrepareText,
+                "stop_words": GenerateStopWords,
+            },
+        )
+        .add_task(
+            ExtractKeywords,
+            depends_on={  # fan-in
+                "content": PrepareText,
+                "stop_words": GenerateStopWords,
+            },
+        )
         .add_task(ScoreReadability, depends_on=PrepareText)  # single dep
-        .add_task(BuildReport, depends_on={                  # fan-in from all three
-            "stats": ComputeWordStats,
-            "keywords": (ExtractKeywords, "keywords"),           # output field routing
-            "readability": ScoreReadability,
-            "num_words_removed": (ExtractKeywords, "num_words_removed"),  # output field routing
-        })
+        .add_task(
+            BuildReport,
+            depends_on={  # fan-in from all three
+                "stats": ComputeWordStats,
+                "keywords": (ExtractKeywords, "keywords"),  # output field routing
+                "readability": ScoreReadability,
+                "num_words_removed": (
+                    ExtractKeywords,
+                    "num_words_removed",
+                ),  # output field routing
+            },
+        )
         .build()
     )
 
@@ -398,15 +495,23 @@ def run_yaml_mode(workflow_path: str, input_path: str) -> None:
 
 def main() -> None:
     import argparse
+    from pathlib import Path
+
+    _dir = Path(__file__).resolve().parent
 
     parser = argparse.ArgumentParser(description="Text Analysis Pipeline example")
     parser.add_argument(
-        "--yaml", metavar="FILE", nargs="?", const="example.yaml",
-        help="Load workflow from a YAML config file (default: example.yaml)",
+        "--yaml",
+        metavar="FILE",
+        nargs="?",
+        const=str(_dir / "workflow.yaml"),
+        help="Load workflow from a YAML config file (default: workflow.yaml)",
     )
     parser.add_argument(
-        "--input", metavar="FILE", default="example_input.yaml",
-        help="Input YAML file (default: example_input.yaml)",
+        "--input",
+        metavar="FILE",
+        default=str(_dir / "input.yaml"),
+        help="Input YAML file (default: input.yaml)",
     )
     args = parser.parse_args()
 

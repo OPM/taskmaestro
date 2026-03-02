@@ -18,10 +18,9 @@ ConnectToResInsight ──► LoadModel ──┤     (well_1)        (perf_1)  
 
 Run:
     source .venv/bin/activate
-    python example_resinsight.py              # Python API
-    python example_resinsight.py --yaml       # YAML config (defaults)
-    python example_resinsight.py --yaml example_resinsight.yaml \
-        --input example_resinsight_input.yaml
+    python examples/resinsight/pipeline.py              # Python API
+    python examples/resinsight/pipeline.py --yaml       # YAML config (defaults)
+    python examples/resinsight/pipeline.py --yaml workflow.yaml --input input.yaml
 """
 
 from __future__ import annotations
@@ -315,20 +314,23 @@ def run_yaml_mode(workflow_path: str, input_path: str) -> None:
 
 def main() -> None:
     import argparse
+    from pathlib import Path
+
+    _dir = Path(__file__).resolve().parent
 
     parser = argparse.ArgumentParser(description="ResInsight Completions Pipeline example")
     parser.add_argument(
         "--yaml",
         metavar="FILE",
         nargs="?",
-        const="example_resinsight.yaml",
-        help="Load workflow from a YAML config file (default: example_resinsight.yaml)",
+        const=str(_dir / "workflow.yaml"),
+        help="Load workflow from a YAML config file (default: workflow.yaml)",
     )
     parser.add_argument(
         "--input",
         metavar="FILE",
-        default="example_resinsight_input.yaml",
-        help="Input YAML file (default: example_resinsight_input.yaml)",
+        default=str(_dir / "input.yaml"),
+        help="Input YAML file (default: input.yaml)",
     )
     args = parser.parse_args()
 

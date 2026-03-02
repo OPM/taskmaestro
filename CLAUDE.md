@@ -8,8 +8,8 @@ Typed DAG task workflow library with Pydantic models, lifecycle hooks, and fail-
 source .venv/bin/activate          # activate venv
 pip install -e ".[dev]"            # install with dev deps
 pytest -v                          # run tests
-ruff check taskekrabbe/ tests/ # lint
-ruff format taskekrabbe/ tests/ # format
+ruff check taskekrabbe/ tests/ examples/ # lint
+ruff format taskekrabbe/ tests/ examples/ # format
 mypy taskekrabbe               # type check (strict mode)
 ```
 

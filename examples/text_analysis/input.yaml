@@ -1,7 +1,7 @@
 # Input data for the Text Analysis Pipeline
 #
 # Run:
-#   python example.py --yaml --input example_input.yaml
+#   python examples/text_analysis/pipeline.py --yaml --input input.yaml
 
 text: >
   Python is a high-level programming language known for its clear syntax and

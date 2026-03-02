@@ -1,0 +1,37 @@
+# Text Analysis Pipeline — YAML workflow configuration
+# Equivalent to the Python-defined DAG in examples/text_analysis/pipeline.py
+#
+# Run:
+#   python examples/text_analysis/pipeline.py --yaml
+#   python examples/text_analysis/pipeline.py --yaml workflow.yaml --input input.yaml
+
+workflow:
+  name: text_analysis
+  tasks:
+    - task: pipeline.PrepareText
+    - task: pipeline.GenerateStopWords
+    - task: pipeline.ComputeWordStats
+      depends_on:
+        content: pipeline.PrepareText
+        stop_words: pipeline.GenerateStopWords
+    - task: pipeline.ExtractKeywords
+      depends_on:
+        content: pipeline.PrepareText
+        stop_words: pipeline.GenerateStopWords
+    - task: pipeline.ScoreReadability
+      depends_on: pipeline.PrepareText
+    - task: pipeline.BuildReport
+      depends_on:
+        stats: pipeline.ComputeWordStats
+        keywords: [pipeline.ExtractKeywords, keywords]                    # output field routing
+        readability: pipeline.ScoreReadability
+        num_words_removed: [pipeline.ExtractKeywords, num_words_removed]  # output field routing
+
+runner:
+  hooks:
+    - hook: taskekrabbe.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.timing.TimingHook
+
+context:
+  services:
+    title: "Python Overview"
