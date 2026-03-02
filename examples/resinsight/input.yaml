@@ -7,11 +7,11 @@
 
 connect_to_resinsight: {}
 load_model:
-  egrid_path: "/home/resinsight/norne/NORNE.EGRID"
+  path: "/home/resinsight/norne/NORNE.EGRID"
 load_well_path_1:
-  well_path_file: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/B-2H.json"
+  path: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/B-2H.json"
 load_well_path_2:
-  well_path_file: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/C-4H.json"
+  path: "/home/resinsight/testdata/projects/ResInsight-regression-test/ModelData/Norne_WellPaths/C-4H.json"
 add_perf_1:
   start_md: 3000.0
   end_md: 3500.0

@@ -28,7 +28,7 @@ workflow:
       depends_on: load_well_path_2
     - task: pipeline.ExportCompletions
       depends_on:
-        case: pipeline.LoadModel
+        grid_case: pipeline.LoadModel
         perforation_1: add_perf_1
         perforation_2: add_perf_2
 

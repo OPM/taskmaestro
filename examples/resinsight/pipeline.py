@@ -32,7 +32,7 @@ from __future__ import annotations
 from typing import Any
 
 import rips
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from taskekrabbe import (
     EmptyConfig,
@@ -56,38 +56,34 @@ class ConnectionOutput(BaseModel):
     port: int
 
 
-class LoadModelInput(BaseModel):
-    """Input for LoadModel: port from upstream, egrid_path from config."""
+class FilePath(BaseModel):
+    """A file path provided via config."""
 
-    port: int
-    egrid_path: str
-
-
-class LoadModelOutput(BaseModel):
-    """Output of LoadModel: case metadata."""
-
-    case_id: int
-    case_name: str
+    path: str
 
 
-class LoadWellPathInput(BaseModel):
-    """Input for LoadWellPath: case info from upstream, well_path_file from config."""
+class GridCase(BaseModel):
+    """Output of LoadModel: case object and metadata."""
 
-    case_id: int
-    case_name: str
-    well_path_file: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    grid_case: rips.EclipseCase
 
 
-class WellPathOutput(BaseModel):
-    """Output of LoadWellPath: imported well path name."""
+class WellPath(BaseModel):
+    """Output of LoadWellPath: imported well path."""
 
-    well_path_name: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    well: rips.WellPath
 
 
 class AddPerforationInput(BaseModel):
-    """Input for AddPerforation: well_path_name from upstream, MD range from config."""
+    """Input for AddPerforation: well from upstream, MD range from config."""
 
-    well_path_name: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    well: rips.WellPath
     start_md: float
     end_md: float
 
@@ -95,7 +91,9 @@ class AddPerforationInput(BaseModel):
 class PerforationOutput(BaseModel):
     """Output of AddPerforation: perforation interval details."""
 
-    well_path_name: str
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    well: rips.WellPath
     start_md: float
     end_md: float
 
@@ -119,32 +117,31 @@ class ConnectToResInsight(Task[EmptyConfig, ConnectionOutput]):
         return ConnectionOutput(port=port)
 
 
-class LoadModel(Task[LoadModelInput, LoadModelOutput]):
+class LoadModel(Task[FilePath, GridCase]):
     """Load the reservoir model (.egrid) into ResInsight."""
 
     name = "load_model"
 
-    def run(self, input: LoadModelInput, ctx: ExecutionContext) -> LoadModelOutput:
+    def run(self, input: FilePath, ctx: ExecutionContext) -> GridCase:
         instance: rips.Instance = ctx.resolve("resinsight")
-        ctx.logger.info("Loading model from %s", input.egrid_path)
-        case = instance.project.load_case(input.egrid_path)
-        ctx.register("case", case)
-        ctx.logger.info("Loaded case '%s' (id=%d)", case.name, case.id)
-        return LoadModelOutput(case_id=case.id, case_name=case.name)
+        ctx.logger.info("Loading model from %s", input.path)
+        grid_case = instance.project.load_case(input.path)
+        ctx.logger.info("Loaded case '%s' (id=%d)", grid_case.name, grid_case.id)
+        return GridCase(grid_case=grid_case)
 
 
-class LoadWellPath(Task[LoadWellPathInput, WellPathOutput]):
+class LoadWellPath(Task[FilePath, WellPath]):
     """Import a well path file into ResInsight."""
 
     name = "load_well_path"
 
-    def run(self, input: LoadWellPathInput, ctx: ExecutionContext) -> WellPathOutput:
+    def run(self, input: FilePath, ctx: ExecutionContext) -> WellPath:
         instance: rips.Instance = ctx.resolve("resinsight")
-        ctx.logger.info("Importing well path from %s", input.well_path_file)
+        ctx.logger.info("Importing well path from %s", input.path)
         collection = instance.project.well_path_collection()
-        well_path = collection.import_well_path(file_name=input.well_path_file)
+        well_path = collection.import_well_path(file_name=input.path)
         ctx.logger.info("Imported well path '%s'", well_path.name)
-        return WellPathOutput(well_path_name=well_path.name)
+        return WellPath(well=well_path)
 
 
 class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
@@ -156,25 +153,19 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
         instance: rips.Instance = ctx.resolve("resinsight")
         ctx.logger.info(
             "Adding perforation to '%s' at MD %.1f-%.1f",
-            input.well_path_name,
+            input.well.name,
             input.start_md,
             input.end_md,
         )
-        # Look up the well path object by name
-        well_path_obj = None
-        for wp in instance.project.well_path_collection().well_paths():
-            if wp.name == input.well_path_name:
-                well_path_obj = wp
-                break
         collection = instance.project.descendants(rips.WellPathCollection)[0]
         timeline = collection.event_timeline()
         timeline.add_perf_event(
-            well_path=well_path_obj,
+            well_path=input.well,
             start_md=input.start_md,
             end_md=input.end_md,
         )
         return PerforationOutput(
-            well_path_name=input.well_path_name,
+            well=input.well,
             start_md=input.start_md,
             end_md=input.end_md,
         )
@@ -190,7 +181,7 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
     name = "export_completions"
 
     class Inputs(BaseModel):
-        case: LoadModelOutput
+        grid_case: GridCase
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
         export_path: str
@@ -200,17 +191,17 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         well_path_names: list[str]
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
-        case = ctx.resolve("case")
+        eclipse_case = input.grid_case.grid_case
         well_path_names = [
-            input.perforation_1.well_path_name,
-            input.perforation_2.well_path_name,
+            input.perforation_1.well.name,
+            input.perforation_2.well.name,
         ]
         ctx.logger.info(
             "Exporting completions for wells %s to %s",
             well_path_names,
             input.export_path,
         )
-        case.export_well_path_completions(
+        eclipse_case.export_well_path_completions(
             time_step=0,
             well_path_names=well_path_names,
             file_split="UNIFIED_FILE",
@@ -234,19 +225,19 @@ workflow = (
     .add_task(
         LoadModel,
         depends_on=ConnectToResInsight,
-        config_fields=["egrid_path"],
+        config_fields=["path"],
     )
     .add_task(
         LoadWellPath,
         name="load_well_path_1",
         depends_on=LoadModel,
-        config_fields=["well_path_file"],
+        config_fields=["path"],
     )
     .add_task(
         LoadWellPath,
         name="load_well_path_2",
         depends_on=LoadModel,
-        config_fields=["well_path_file"],
+        config_fields=["path"],
     )
     .add_task(
         AddPerforation,
@@ -263,7 +254,7 @@ workflow = (
     .add_task(
         ExportCompletions,
         depends_on={
-            "case": LoadModel,
+            "grid_case": LoadModel,
             "perforation_1": "add_perf_1",
             "perforation_2": "add_perf_2",
         },
@@ -309,13 +300,13 @@ def run_python_mode() -> None:
         {
             "connect_to_resinsight": {},
             "load_model": {
-                "egrid_path": "/path/to/model/NORNE_ATW2013.EGRID",
+                "path": "/path/to/model/NORNE_ATW2013.EGRID",
             },
             "load_well_path_1": {
-                "well_path_file": "/path/to/wells/well_1.dev",
+                "path": "/path/to/wells/well_1.dev",
             },
             "load_well_path_2": {
-                "well_path_file": "/path/to/wells/well_2.dev",
+                "path": "/path/to/wells/well_2.dev",
             },
             "add_perf_1": {
                 "start_md": 3000.0,
