@@ -33,7 +33,7 @@ class TestLinearWorkflow:
     def test_valid_three_task_chain(self) -> None:
         wf = Workflow(name="test", tasks=[AddOne, Double, Stringify])
         order = wf.topological_order()
-        assert [t.name for t in order] == ["add_one", "double", "stringify"]
+        assert [name for name, _ in order] == ["add_one", "double", "stringify"]
 
     def test_type_mismatch_raises(self) -> None:
         """Stringify outputs StringOutput, but Double expects NumberOutput."""
@@ -43,7 +43,7 @@ class TestLinearWorkflow:
     def test_single_task_workflow(self) -> None:
         wf = Workflow(name="single", tasks=[AddOne])
         assert wf.result_task is AddOne
-        assert wf.topological_order() == [AddOne]
+        assert wf.topological_order() == [("add_one", AddOne)]
 
     def test_empty_workflow(self) -> None:
         wf = Workflow(name="empty")
@@ -71,8 +71,8 @@ class TestDAGWorkflow:
             .build()
         )
         order = wf.topological_order()
-        assert order[0] is AddOne
-        assert set(order[1:]) == {Double, Stringify}
+        assert order[0] == ("add_one", AddOne)
+        assert set(order[1:]) == {("double", Double), ("stringify", Stringify)}
 
     def test_duplicate_task_name_raises(self) -> None:
         with pytest.raises(WorkflowDefinitionError, match="Duplicate"):
@@ -93,10 +93,11 @@ class TestDAGWorkflow:
             def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberInput:
                 return NumberInput(value=input.value)
 
+        # Use string forward references to create a cycle
         with pytest.raises(CycleDetectedError):
             (
                 Workflow.builder(name="bad")
-                .add_task(TaskA, depends_on=TaskB)
+                .add_task(TaskA, depends_on="task_b")
                 .add_task(TaskB, depends_on=TaskA)
                 .build()
             )
@@ -169,7 +170,7 @@ class TestTopologicalOrder:
     def test_linear_order(self) -> None:
         wf = Workflow(name="test", tasks=[AddOne, Double])
         order = wf.topological_order()
-        assert order == [AddOne, Double]
+        assert order == [("add_one", AddOne), ("double", Double)]
 
     def test_dag_order_respects_dependencies(self) -> None:
         wf = (
@@ -181,8 +182,8 @@ class TestTopologicalOrder:
         )
         order = wf.topological_order()
         # FanInTask must come after both AddOne and AddOneB
-        assert order[-1] is FanInTask
-        assert set(order[:2]) == {AddOne, AddOneB}
+        assert order[-1] == ("fan_in_task", FanInTask)
+        assert set(order[:2]) == {("add_one", AddOne), ("add_one_b", AddOneB)}
 
 
 class TestResultTask:
@@ -354,7 +355,7 @@ class TestOutputFieldRouting:
             .build()
         )
         order = wf.topological_order()
-        names = [t.name for t in order]
+        names = [name for name, _ in order]
         assert names.index("producer") < names.index("double")
         assert names.index("double") < names.index("stringify")
 
@@ -427,3 +428,174 @@ class TestGetDependencies:
         )
         deps = wf.get_dependencies("fan_in_task")
         assert deps == {"a": "add_one", "b": "add_one_b"}
+
+
+class TestNamedTaskInstances:
+    """Tests for using the same Task class with different names."""
+
+    def test_same_class_different_names(self) -> None:
+        """Same class added twice with different name= parameters builds successfully."""
+        wf = (
+            Workflow.builder(name="named")
+            .add_task(AddOne, name="first")
+            .add_task(AddOne, name="second")
+            .add_task(
+                FanInTask,
+                depends_on={"a": "first", "b": "second"},
+            )
+            .build()
+        )
+        assert wf.result_task is FanInTask
+        order = wf.topological_order()
+        names = [name for name, _ in order]
+        assert "first" in names
+        assert "second" in names
+
+    def test_string_dep_resolves(self) -> None:
+        """depends_on with string name reference resolves correctly."""
+        wf = (
+            Workflow.builder(name="str_dep")
+            .add_task(AddOne, name="step_one")
+            .add_task(Double, depends_on="step_one")
+            .build()
+        )
+        assert wf.get_dependencies("double") == "step_one"
+
+    def test_class_ref_still_works_unambiguous(self) -> None:
+        """Class reference in depends_on works when unambiguous (backwards compat)."""
+        wf = (
+            Workflow.builder(name="compat")
+            .add_task(AddOne)
+            .add_task(Double, depends_on=AddOne)
+            .build()
+        )
+        assert wf.get_dependencies("double") == "add_one"
+
+    def test_ambiguous_class_ref_raises(self) -> None:
+        """Ambiguous class reference raises WorkflowDefinitionError."""
+        with pytest.raises(WorkflowDefinitionError, match="Ambiguous reference"):
+            (
+                Workflow.builder(name="bad")
+                .add_task(AddOne, name="first")
+                .add_task(AddOne, name="second")
+                .add_task(Double, depends_on=AddOne)
+                .build()
+            )
+
+    def test_fan_in_mixed_string_and_class(self) -> None:
+        """Fan-in dict with mixed string/class references."""
+        wf = (
+            Workflow.builder(name="mixed")
+            .add_task(AddOne, name="branch_a")
+            .add_task(AddOneB)
+            .add_task(
+                FanInTask,
+                depends_on={"a": "branch_a", "b": AddOneB},
+            )
+            .build()
+        )
+        deps = wf.get_dependencies("fan_in_task")
+        assert deps == {"a": "branch_a", "b": "add_one_b"}
+
+    def test_type_validation_named_instances(self) -> None:
+        """Type validation works for named instances (same I/O types)."""
+        wf = (
+            Workflow.builder(name="typed")
+            .add_task(AddOne, name="first")
+            .add_task(Double, depends_on="first")
+            .build()
+        )
+        assert wf.result_task is Double
+
+    def test_result_task_name_property(self) -> None:
+        """result_task_name property returns the registered name."""
+        wf = (
+            Workflow.builder(name="rtn", result_task="custom_name")
+            .add_task(AddOne, name="custom_name")
+            .build()
+        )
+        assert wf.result_task_name == "custom_name"
+
+    def test_result_task_name_not_set_raises(self) -> None:
+        """result_task_name raises when no result task set."""
+        wf = Workflow(name="empty")
+        with pytest.raises(WorkflowDefinitionError, match="No result task set"):
+            _ = wf.result_task_name
+
+    def test_result_task_as_string(self) -> None:
+        """result_task can be passed as string to builder."""
+        wf = (
+            Workflow.builder(name="str_result", result_task="my_double")
+            .add_task(AddOne)
+            .add_task(Double, name="my_double", depends_on=AddOne)
+            .add_task(Stringify, depends_on=AddOne)
+            .build()
+        )
+        assert wf.result_task is Double
+        assert wf.result_task_name == "my_double"
+
+    def test_dep_not_found_string_raises(self) -> None:
+        """String dependency that doesn't exist raises."""
+        with pytest.raises(WorkflowDefinitionError, match="not registered"):
+            (
+                Workflow.builder(name="bad")
+                .add_task(AddOne)
+                .add_task(Double, depends_on="nonexistent")
+                .build()
+            )
+
+    def test_dep_not_found_class_raises(self) -> None:
+        """Class dependency that hasn't been added raises."""
+        with pytest.raises(WorkflowDefinitionError, match="not found"):
+            (Workflow.builder(name="bad").add_task(Double, depends_on=AddOne).build())
+
+    def test_tuple_dep_with_string_name(self) -> None:
+        """Tuple dependency with string name reference."""
+
+        class MultiOut(BaseModel):
+            stats: NumberOutput
+
+        class Producer(Task[NumberInput, MultiOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MultiOut:
+                return MultiOut(stats=NumberOutput(value=0))
+
+        wf = (
+            Workflow.builder("tuple_str")
+            .add_task(Producer, name="my_producer")
+            .add_task(Double, depends_on=("my_producer", "stats"))
+            .build()
+        )
+        assert wf.get_dependencies("double") == ("my_producer", "stats")
+
+    def test_fan_in_tuple_with_string_name(self) -> None:
+        """Fan-in with tuple field ref using string name."""
+
+        class MultiOut(BaseModel):
+            a: NumberOutput
+            b: NumberOutput
+
+        class Producer(Task[NumberInput, MultiOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> MultiOut:
+                return MultiOut(
+                    a=NumberOutput(value=1),
+                    b=NumberOutput(value=2),
+                )
+
+        wf = (
+            Workflow.builder("fan_in_str")
+            .add_task(Producer, name="my_producer")
+            .add_task(AddOneB)
+            .add_task(
+                FanInTask,
+                depends_on={
+                    "a": ("my_producer", "a"),
+                    "b": AddOneB,
+                },
+            )
+            .build()
+        )
+        assert wf.result_task is FanInTask

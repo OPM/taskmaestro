@@ -295,3 +295,57 @@ class TestContextIntegration:
         assert result.status == JobStatus.COMPLETED
         assert result.result is not None
         assert result.result.value == 15  # type: ignore[attr-defined]
+
+
+class TestNamedTaskInstanceExecution:
+    """Tests for executing workflows with named task instances."""
+
+    def test_same_class_two_names_executes(self, ctx: ExecutionContext) -> None:
+        """Workflow with same class under two names executes correctly."""
+        wf = (
+            Workflow.builder(name="named_exec")
+            .add_task(AddOne, name="first_add")
+            .add_task(AddOne, name="second_add")
+            .add_task(
+                FanInTask,
+                depends_on={"a": "first_add", "b": "second_add"},
+            )
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=5))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        assert result.result is not None
+        assert result.result.total == 12  # type: ignore[attr-defined]
+
+    def test_task_results_use_instance_names(self, ctx: ExecutionContext) -> None:
+        """task_results contain the correct instance names, not class defaults."""
+        wf = (
+            Workflow.builder(name="named_results")
+            .add_task(AddOne, name="step_a")
+            .add_task(Double, depends_on="step_a")
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=3))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        names = [tr.task_name for tr in result.task_results]
+        assert names == ["step_a", "double"]
+
+    def test_string_dep_fan_in_execution(self, ctx: ExecutionContext) -> None:
+        """Fan-in with string dependencies executes correctly."""
+        wf = (
+            Workflow.builder(name="str_fan_in")
+            .add_task(AddOne, name="branch_1")
+            .add_task(AddOne, name="branch_2")
+            .add_task(
+                FanInTask,
+                depends_on={"a": "branch_1", "b": "branch_2"},
+            )
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=10))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+        # Both branches add 1 to 10 = 11, total = 22
+        assert result.result.total == 22  # type: ignore[union-attr]

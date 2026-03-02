@@ -55,9 +55,10 @@ class Runner:
         outputs: dict[str, BaseModel] = {}
 
         try:
-            for task_cls in workflow.topological_order():
+            for task_name, task_cls in workflow.topological_order():
                 task = task_cls()
-                deps = workflow.get_dependencies(task.name)
+                task.name = task_name  # instance-level override for named instances
+                deps = workflow.get_dependencies(task_name)
 
                 # Assemble input based on dependency type
                 if deps is None:
@@ -138,7 +139,7 @@ class Runner:
                 signal.alarm(0)
 
         job.status = JobStatus.COMPLETED
-        job.result = outputs[workflow.result_task.name]
+        job.result = outputs[workflow.result_task_name]
         job.completed_at = datetime.now()
         self._emit(Event.JOB_COMPLETE, job)
         return job

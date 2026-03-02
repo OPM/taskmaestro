@@ -1,0 +1,35 @@
+# ResInsight Completions Pipeline — YAML workflow configuration
+# Equivalent to the Python-defined DAG in example_resinsight.py
+#
+# Run:
+#   python example_resinsight.py --yaml
+#   python example_resinsight.py --yaml example_resinsight.yaml --input example_resinsight_input.yaml
+
+workflow:
+  name: resinsight_completions
+  tasks:
+    - task: example_resinsight.ConnectToResInsight
+    - task: example_resinsight.LoadModel
+      depends_on: example_resinsight.ConnectToResInsight
+    - task: example_resinsight.LoadWellPath
+      name: load_well_path_1
+      depends_on: example_resinsight.LoadModel
+    - task: example_resinsight.LoadWellPath
+      name: load_well_path_2
+      depends_on: example_resinsight.LoadModel
+    - task: example_resinsight.AddPerforation
+      name: add_perf_1
+      depends_on: load_well_path_1
+    - task: example_resinsight.AddPerforation
+      name: add_perf_2
+      depends_on: load_well_path_2
+    - task: example_resinsight.ExportCompletions
+      depends_on:
+        case: example_resinsight.LoadModel
+        perforation_1: add_perf_1
+        perforation_2: add_perf_2
+
+runner:
+  hooks:
+    - hook: taskekrabbe.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.timing.TimingHook

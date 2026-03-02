@@ -24,6 +24,7 @@ from tests.conftest import (
     AddOne,
     Double,
     FailingTask,
+    FanInTask,
     NumberInput,
 )
 
@@ -172,3 +173,46 @@ class TestBaseHookNoOps:
         job = Job(workflow=wf, config=NumberInput(value=1))
         result = Runner(hooks=[BaseHook()]).run(job, ctx=ctx)
         assert result.status == JobStatus.FAILED
+
+
+class TestNamedInstanceHooks:
+    """Tests that hooks see the registered instance name, not the class name."""
+
+    def test_hooks_see_instance_names(self, ctx: ExecutionContext) -> None:
+        wf = (
+            Workflow.builder(name="named_hooks")
+            .add_task(AddOne, name="step_alpha")
+            .add_task(Double, depends_on="step_alpha")
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        hook = RecordingHook()
+        Runner(hooks=[hook]).run(job, ctx=ctx)
+        assert hook.events == [
+            "job_start",
+            "task_start:step_alpha",
+            "task_complete:step_alpha",
+            "task_start:double",
+            "task_complete:double",
+            "job_complete",
+        ]
+
+    def test_hooks_see_both_named_instances(self, ctx: ExecutionContext) -> None:
+        """When same class is used twice, hooks see both registered names."""
+        wf = (
+            Workflow.builder(name="dual_named")
+            .add_task(AddOne, name="first")
+            .add_task(AddOne, name="second")
+            .add_task(
+                FanInTask,
+                depends_on={"a": "first", "b": "second"},
+            )
+            .build()
+        )
+        job = Job(workflow=wf, config=NumberInput(value=5))
+        hook = RecordingHook()
+        Runner(hooks=[hook]).run(job, ctx=ctx)
+        assert "task_start:first" in hook.events
+        assert "task_complete:first" in hook.events
+        assert "task_start:second" in hook.events
+        assert "task_complete:second" in hook.events

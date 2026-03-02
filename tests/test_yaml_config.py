@@ -883,6 +883,99 @@ workflow:
 # ============================================================
 
 
+class TestYamlNamedInstances:
+    """Tests for YAML configs with name: field on tasks."""
+
+    def test_named_instances_yaml(self, tmp_path: Path) -> None:
+        """YAML with name: field on tasks loads and resolves dependencies correctly."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: named_yaml
+  result_task: reverse_it
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+      name: upper_1
+    - task: {THIS_MODULE}.UpperText
+      name: upper_2
+    - task: {THIS_MODULE}.ReverseText
+      name: reverse_it
+      depends_on: upper_1
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        # ReverseText reverses the output of upper_1 ("HELLO" -> "OLLEH")
+        assert result.result.text == "OLLEH"  # type: ignore[union-attr]
+
+    def test_named_instances_fan_in(self, tmp_path: Path) -> None:
+        """Fan-in referencing named instances by name."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: named_fan_in
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: reverse_1
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      name: length_1
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.CombineResults
+      depends_on:
+        reversed: reverse_1
+        length: length_1
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert "OLLEH" in result.result.summary  # type: ignore[union-attr]
+
+    def test_result_task_not_found_raises(self, tmp_path: Path) -> None:
+        """result_task referencing a nonexistent name raises ConfigLoadError."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad_result
+  result_task: nonexistent_task
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="result_task.*not found"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_named_result_task(self, tmp_path: Path) -> None:
+        """result_task references a named instance."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: named_result
+  result_task: my_upper
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+      name: my_upper
+    - task: {THIS_MODULE}.ReverseText
+      depends_on: my_upper
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.workflow.result_task_name == "my_upper"
+
+
 class TestCoerceHookParams:
     def test_path_coercion(self) -> None:
         from taskekrabbe.hooks.persistence import ResultPersistenceHook
