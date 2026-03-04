@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from taskekrabbe import ExecutionContext, Task, Workflow, to_mermaid
+from taskekrabbe import ExecutionContext, ObjectModel, Task, Workflow, to_mermaid
 
 # --- Models for fan-in DAG test ---
 
@@ -227,6 +227,60 @@ class TestSingleTask:
         lines = result.strip().splitlines()
         edge_lines = [line for line in lines if "-->" in line]
         assert len(edge_lines) == 2
+
+
+# --- Module-level alias for generic type alias resolution test ---
+
+WrappedStr = ObjectModel[str]
+
+
+class ProduceWrapped(Task[TextInput, WrappedStr]):
+    name = "produce_wrapped"
+
+    def run(self, input: TextInput, ctx: ExecutionContext) -> WrappedStr:
+        return WrappedStr(value=input.text)
+
+
+class ConsumeWrapped(Task[WrappedStr, Report]):
+    name = "consume_wrapped"
+
+    def run(self, input: WrappedStr, ctx: ExecutionContext) -> Report:
+        return Report(summary=input.value)
+
+
+class TestGenericAliasResolution:
+    """Tests that module-level type aliases resolve to their alias name."""
+
+    def test_alias_resolved_in_edge_labels(self) -> None:
+        wf = (
+            Workflow.builder("alias_viz")
+            .add_task(ProduceWrapped)
+            .add_task(ConsumeWrapped, depends_on=ProduceWrapped)
+            .build()
+        )
+        result = to_mermaid(wf)
+
+        # Edge should use alias name "WrappedStr", not "ObjectModel[str]"
+        assert "produce_wrapped -->|WrappedStr| consume_wrapped" in result
+        assert "ObjectModel" not in result
+
+    def test_alias_fallback_without_context(self) -> None:
+        """Without context_cls, generic types fall back to escaped brackets."""
+        from taskekrabbe.visualization import _safe_type_name
+
+        # No context class — can't scan any module, uses HTML escaping
+        result = _safe_type_name(WrappedStr)
+        assert "ObjectModel" in result
+        assert "&lsaquo;" in result
+
+    def test_alias_fallback_no_match_in_module(self) -> None:
+        """Generic type not aliased in the context module uses escaped brackets."""
+        from taskekrabbe.visualization import _safe_type_name
+
+        # ObjectModel[int] is not assigned to any name in this module
+        DynamicType = ObjectModel[int]
+        result = _safe_type_name(DynamicType, ProduceWrapped)
+        assert "&lsaquo;" in result
 
 
 class TestConfigFieldsVisualization:
