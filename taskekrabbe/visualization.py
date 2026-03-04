@@ -32,9 +32,7 @@ def _safe_type_name(tp: type, context_cls: type | None = None) -> str:
     return name.replace("[", "&lsaquo;").replace("]", "&rsaquo;")
 
 
-def _field_type_label(
-    task_by_name: dict[str, type], upstream_name: str, field_name: str
-) -> str:
+def _field_type_label(task_by_name: dict[str, type], upstream_name: str, field_name: str) -> str:
     """Return ``'.field: FieldType'`` for a field-ref edge."""
     upstream_cls = task_by_name[upstream_name]
     output_model = get_output_type(upstream_cls)

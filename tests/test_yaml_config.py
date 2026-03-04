@@ -14,6 +14,7 @@ from taskekrabbe import (
     Task,
 )
 from taskekrabbe.yaml_config import (
+    TaskConfig,
     YamlWorkflowConfig,
     _coerce_hook_params,
     import_class,
@@ -1153,3 +1154,292 @@ per_task_root:
         loaded = load_workflow_from_yaml(wf_path, in_path)
         result = loaded.run()
         assert result.status == JobStatus.COMPLETED
+
+
+# ============================================================
+# TestWorkflowTaskYaml
+# ============================================================
+
+
+class TestWorkflowTaskYaml:
+    """Tests for YAML workflow: references (workflow_task via YAML)."""
+
+    def _write_yaml(self, path: Path, content: str) -> Path:
+        path.write_text(content)
+        return path
+
+    def test_workflow_ref_basic(self, tmp_path: Path) -> None:
+        """Outer YAML references inner YAML via workflow:, end-to-end."""
+        self._write_yaml(
+            tmp_path / "inner.yaml",
+            f"""\
+workflow:
+  name: inner_pipeline
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer_pipeline
+  tasks:
+    - workflow: inner.yaml
+      name: sub_pipeline
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub_pipeline
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        loaded = load_workflow_from_yaml(outer_path, in_path)
+        result = loaded.run()
+
+        assert result.status == JobStatus.COMPLETED
+        # inner: "hello" -> "HELLO" -> "OLLEH" (TextOutput)
+        # TextLength: len("OLLEH") = 5
+        assert result.result.length == 5  # type: ignore[union-attr]
+
+    def test_workflow_ref_with_input(self, tmp_path: Path) -> None:
+        """Inner YAML + workflow_input: for config_fields."""
+        self._write_yaml(
+            tmp_path / "inner.yaml",
+            f"""\
+workflow:
+  name: inner_cfg
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        self._write_yaml(
+            tmp_path / "inner_input.yaml",
+            """\
+upper_text:
+  text: configured_hello
+""",
+        )
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer_cfg
+  tasks:
+    - workflow: inner.yaml
+      workflow_input: inner_input.yaml
+      name: sub_cfg
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub_cfg
+""",
+        )
+        # Outer root is sub_cfg (EmptyConfig input), so outer input is empty
+        in_path = self._write_yaml(tmp_path / "input.yaml", "{}\n")
+        loaded = load_workflow_from_yaml(outer_path, in_path)
+        result = loaded.run()
+
+        assert result.status == JobStatus.COMPLETED
+        # inner: per-task config "configured_hello" -> "CONFIGURED_HELLO" -> "OLLEH_DERUGIFINOC"
+        # TextLength: len("OLLEH_DERUGIFINOC") = 16
+        assert result.result.length == 16  # type: ignore[union-attr]
+
+    def test_workflow_ref_path_resolution(self, tmp_path: Path) -> None:
+        """Paths resolve relative to outer YAML file's directory."""
+        subdir = tmp_path / "subdir"
+        subdir.mkdir()
+
+        self._write_yaml(
+            subdir / "inner.yaml",
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            """\
+workflow:
+  name: outer
+  tasks:
+    - workflow: subdir/inner.yaml
+      name: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: world\n")
+        loaded = load_workflow_from_yaml(outer_path, in_path)
+        result = loaded.run()
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.text == "WORLD"  # type: ignore[union-attr]
+
+    def test_task_and_workflow_both_set_rejected(self) -> None:
+        """Validator rejects entry with both task: and workflow:."""
+        with pytest.raises(ValidationError, match="Specify either"):
+            TaskConfig(task="mod.Task", workflow="inner.yaml")
+
+    def test_neither_task_nor_workflow_rejected(self) -> None:
+        """Validator rejects entry with neither task: nor workflow:."""
+        with pytest.raises(ValidationError, match="Must specify either"):
+            TaskConfig()
+
+    def test_workflow_input_without_workflow_rejected(self) -> None:
+        """Validator rejects workflow_input: without workflow:."""
+        with pytest.raises(ValidationError, match="'workflow_input' requires 'workflow'"):
+            TaskConfig(task="mod.Task", workflow_input="input.yaml")
+
+    def test_inner_workflow_bad_yaml(self, tmp_path: Path) -> None:
+        """Inner workflow: reference with bad YAML syntax raises ConfigLoadError."""
+        self._write_yaml(tmp_path / "inner.yaml", "tasks: [invalid yaml\n")
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      name: sub
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="YAML parse error"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_file_not_found(self, tmp_path: Path) -> None:
+        """Inner workflow: reference to nonexistent file raises ConfigLoadError."""
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - workflow: nonexistent.yaml
+      name: sub
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="Cannot read file"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_not_a_mapping(self, tmp_path: Path) -> None:
+        """Inner workflow: YAML that is not a mapping raises ConfigLoadError."""
+        self._write_yaml(tmp_path / "inner.yaml", "- item1\n- item2\n")
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      name: sub
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="must contain a mapping"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_schema_error(self, tmp_path: Path) -> None:
+        """Inner workflow: YAML with schema error raises ConfigLoadError."""
+        self._write_yaml(tmp_path / "inner.yaml", "workflow:\n  name: inner\n")
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      name: sub
+    - task: {THIS_MODULE}.TextLength
+      depends_on: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="YAML schema validation error"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_input_bad_yaml(self, tmp_path: Path) -> None:
+        """Inner workflow_input with bad YAML syntax raises ConfigLoadError."""
+        self._write_yaml(
+            tmp_path / "inner.yaml",
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        self._write_yaml(tmp_path / "inner_input.yaml", "key: [bad yaml\n")
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            """\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      workflow_input: inner_input.yaml
+      name: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "{}\n")
+        with pytest.raises(ConfigLoadError, match="Input YAML parse error"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_input_file_not_found(self, tmp_path: Path) -> None:
+        """Inner workflow_input referencing nonexistent file raises ConfigLoadError."""
+        self._write_yaml(
+            tmp_path / "inner.yaml",
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            """\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      workflow_input: nonexistent_input.yaml
+      name: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "{}\n")
+        with pytest.raises(ConfigLoadError, match="Cannot read input file"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_inner_workflow_input_not_a_mapping(self, tmp_path: Path) -> None:
+        """Inner workflow_input that is not a mapping raises ConfigLoadError."""
+        self._write_yaml(
+            tmp_path / "inner.yaml",
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        self._write_yaml(tmp_path / "inner_input.yaml", "- item1\n- item2\n")
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            """\
+workflow:
+  name: outer
+  tasks:
+    - workflow: inner.yaml
+      workflow_input: inner_input.yaml
+      name: sub
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "{}\n")
+        with pytest.raises(ConfigLoadError, match="Input YAML file must contain a mapping"):
+            load_workflow_from_yaml(outer_path, in_path)

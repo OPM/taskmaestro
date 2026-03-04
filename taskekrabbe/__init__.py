@@ -18,6 +18,7 @@ from taskekrabbe.runner import Runner
 from taskekrabbe.task import Task
 from taskekrabbe.visualization import to_mermaid
 from taskekrabbe.workflow import Workflow, WorkflowBuilder
+from taskekrabbe.workflow_task import workflow_task
 from taskekrabbe.yaml_config import (
     LoadedWorkflow,
     load_workflow_from_yaml,
@@ -50,4 +51,5 @@ __all__ = [
     "load_workflow_from_yaml",
     "run_workflow_from_yaml",
     "to_mermaid",
+    "workflow_task",
 ]
