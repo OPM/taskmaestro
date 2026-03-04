@@ -89,6 +89,7 @@ WellPath = ObjectModel[rips.WellPath]
 class AddPerforationInput(ObjectModel[rips.WellPath]):
     """Input for AddPerforation: well from upstream, MD range from config."""
 
+    event_date: str
     start_md: float
     end_md: float
 
@@ -154,18 +155,24 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
     def run(self, input: AddPerforationInput, ctx: ExecutionContext) -> PerforationOutput:
         instance: rips.Instance = ctx.resolve("resinsight")
         ctx.logger.info(
-            "Adding perforation to '%s' at MD %.1f-%.1f",
+            "Adding perforation to '%s' at MD %.1f-%.1f on %s",
             input.value.name,
             input.start_md,
             input.end_md,
+            input.event_date,
         )
         collection = instance.project.descendants(rips.WellPathCollection)[0]
         timeline = collection.event_timeline()
         timeline.add_perf_event(
+            event_date=input.event_date,
             well_path=input.value,
             start_md=input.start_md,
             end_md=input.end_md,
+            diameter=0.1,
+            skin_factor=0.5,
+            state="OPEN",
         )
+
         return PerforationOutput(
             value=input.value,
             start_md=input.start_md,
@@ -186,6 +193,7 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         grid_case: GridCase
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
+        event_date: str
         export_path: str
 
     class Outputs(BaseModel):
@@ -203,6 +211,12 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
             well_path_names,
             input.export_path,
         )
+
+        instance: rips.Instance = ctx.resolve("resinsight")
+        collection = instance.project.descendants(rips.WellPathCollection)[0]
+        timeline = collection.event_timeline()
+        timeline.set_timestamp(timestamp=input.event_date)
+
         eclipse_case.export_well_path_completions(
             time_step=0,
             well_path_names=well_path_names,
@@ -245,13 +259,13 @@ workflow = (
         AddPerforation,
         name="add_perf_1",
         depends_on="load_well_path_1",
-        config_fields=["start_md", "end_md"],
+        config_fields=["event_date", "start_md", "end_md"],
     )
     .add_task(
         AddPerforation,
         name="add_perf_2",
         depends_on="load_well_path_2",
-        config_fields=["start_md", "end_md"],
+        config_fields=["event_date", "start_md", "end_md"],
     )
     .add_task(
         ExportCompletions,
@@ -260,7 +274,7 @@ workflow = (
             "perforation_1": "add_perf_1",
             "perforation_2": "add_perf_2",
         },
-        config_fields=["export_path"],
+        config_fields=["event_date", "export_path"],
     )
     .build()
 )
@@ -311,14 +325,17 @@ def run_python_mode() -> None:
                 "path": "/path/to/wells/well_2.dev",
             },
             "add_perf_1": {
+                "event_date": "2024-01-01",
                 "start_md": 3000.0,
                 "end_md": 3500.0,
             },
             "add_perf_2": {
+                "event_date": "2024-02-01",
                 "start_md": 2800.0,
                 "end_md": 3200.0,
             },
             "export_completions": {
+                "event_date": "2024-05-01",
                 "export_path": "/path/to/output/completions.sch",
             },
         }
