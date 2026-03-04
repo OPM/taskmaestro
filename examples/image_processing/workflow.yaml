@@ -1,0 +1,23 @@
+# Outer workflow: image processing pipeline
+#
+# LoadImage feeds into analyze_image (an opaque workflow_task wrapping the
+# inner image_analysis DAG), which feeds into GenerateReport.
+#
+# Run:
+#   python examples/image_processing/pipeline.py --yaml
+#   python examples/image_processing/pipeline.py --yaml workflow.yaml --input input.yaml
+
+workflow:
+  name: image_processing
+  tasks:
+    - task: pipeline.LoadImage
+    - workflow: inner_workflow.yaml
+      name: analyze_image
+      depends_on: pipeline.LoadImage
+    - task: pipeline.GenerateReport
+      depends_on: analyze_image
+
+runner:
+  hooks:
+    - hook: taskekrabbe.hooks.logging.LoggingHook
+    - hook: taskekrabbe.hooks.timing.TimingHook

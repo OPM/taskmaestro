@@ -1,0 +1,18 @@
+# Inner DAG workflow: image analysis with fan-out and fan-in
+#
+# ValidateImage is the sole root.  ReadImageMeta and ComputeHash fan out
+# from it, and BuildAnalysis fans in from all three.
+
+workflow:
+  name: image_analysis
+  tasks:
+    - task: pipeline.ValidateImage
+    - task: pipeline.ReadImageMeta
+      depends_on: pipeline.ValidateImage
+    - task: pipeline.ComputeHash
+      depends_on: pipeline.ValidateImage
+    - task: pipeline.BuildAnalysis
+      depends_on:
+        validated: pipeline.ValidateImage
+        meta: pipeline.ReadImageMeta
+        hash: pipeline.ComputeHash
