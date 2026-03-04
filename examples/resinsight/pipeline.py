@@ -29,6 +29,7 @@ Run:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import rips
@@ -45,6 +46,24 @@ from taskekrabbe import (
     Workflow,
 )
 from taskekrabbe.hooks import LoggingHook, TimingHook
+from taskekrabbe.hooks.base import BaseHook
+
+# ---------------------------------------------------------------------------
+# Custom hook — prints task start/end timestamps to stdout
+# ---------------------------------------------------------------------------
+
+
+class PrintTimestampHook(BaseHook):
+    """A minimal custom hook that prints task start and end times to stdout."""
+
+    def on_task_start(self, job: Job[Any], task: Task[Any, Any]) -> None:
+        now = datetime.now(tz=UTC).isoformat(timespec="milliseconds")
+        print(f"[START] {task.name}  at {now}")
+
+    def on_task_complete(self, job: Job[Any], task: Task[Any, Any], output: BaseModel) -> None:
+        now = datetime.now(tz=UTC).isoformat(timespec="milliseconds")
+        print(f"[END]   {task.name}  at {now}")
+
 
 # ---------------------------------------------------------------------------
 # Models
@@ -313,7 +332,7 @@ def run_python_mode() -> None:
     ctx = ExecutionContext()
 
     timing = TimingHook()
-    runner = Runner(hooks=[LoggingHook(), timing])
+    runner = Runner(hooks=[LoggingHook(), timing, PrintTimestampHook()])
     result = runner.run(job, ctx=ctx)
 
     print_results(result, timing, workflow)

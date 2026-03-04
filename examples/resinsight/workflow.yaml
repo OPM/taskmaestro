@@ -36,3 +36,4 @@ runner:
   hooks:
     - hook: taskekrabbe.hooks.logging.LoggingHook
     - hook: taskekrabbe.hooks.timing.TimingHook
+    - hook: pipeline.PrintTimestampHook
