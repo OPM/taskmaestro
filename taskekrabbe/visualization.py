@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 from taskekrabbe.task import get_input_type, get_output_type
@@ -11,12 +12,35 @@ if TYPE_CHECKING:
     from taskekrabbe.workflow import Workflow
 
 
-def _field_type_label(task_by_name: dict[str, type], upstream_name: str, field_name: str) -> str:
+def _safe_type_name(tp: type, context_cls: type | None = None) -> str:
+    """Return a Mermaid-safe type name, resolving module-level aliases.
+
+    When *context_cls* is provided, its module namespace is scanned for a
+    variable that refers to *tp*, so that ``GridCase = ObjectModel[X]``
+    renders as ``GridCase`` instead of ``ObjectModel[X]``.
+    """
+    name = tp.__name__ if hasattr(tp, "__name__") else str(tp)
+    if "[" not in name:
+        return name
+    # Try to find a module-level alias name for this generic type
+    module_name = getattr(context_cls, "__module__", None) if context_cls else None
+    if module_name and module_name in sys.modules:
+        mod = sys.modules[module_name]
+        for attr_name, attr_val in list(vars(mod).items()):
+            if attr_val is tp and not attr_name.startswith("_"):
+                return attr_name
+    return name.replace("[", "&lsaquo;").replace("]", "&rsaquo;")
+
+
+def _field_type_label(
+    task_by_name: dict[str, type], upstream_name: str, field_name: str
+) -> str:
     """Return ``'.field: FieldType'`` for a field-ref edge."""
-    output_model = get_output_type(task_by_name[upstream_name])
+    upstream_cls = task_by_name[upstream_name]
+    output_model = get_output_type(upstream_cls)
     field_info = output_model.model_fields[field_name]
     annotation = field_info.annotation
-    type_label = annotation.__name__ if annotation is not None else "Any"
+    type_label = _safe_type_name(annotation, upstream_cls) if annotation is not None else "Any"
     return f".{field_name}: {type_label}"
 
 
@@ -68,11 +92,12 @@ def to_mermaid(
         if deps is None:
             if task_name not in configured_tasks:
                 # Root task: edge from start, labeled with input type
-                input_name = get_input_type(task_cls).__name__
+                input_name = _safe_type_name(get_input_type(task_cls), task_cls)
                 lines.append(f"    _start_ -->|{input_name}| {task_name}")
         elif isinstance(deps, str):
             # Single dependency: labeled with upstream output type
-            output_name = get_output_type(task_by_name[deps]).__name__
+            upstream_cls = task_by_name[deps]
+            output_name = _safe_type_name(get_output_type(upstream_cls), upstream_cls)
             lines.append(f"    {deps} -->|{output_name}| {task_name}")
         elif isinstance(deps, tuple):
             # Single dependency, specific output field
@@ -87,7 +112,8 @@ def to_mermaid(
                     label = _field_type_label(task_by_name, upstream_name, up_field)
                     lines.append(f"    {upstream_name} -->|{down_field}: {label}| {task_name}")
                 else:
-                    output_name = get_output_type(task_by_name[upstream_ref]).__name__
+                    up_cls = task_by_name[upstream_ref]
+                    output_name = _safe_type_name(get_output_type(up_cls), up_cls)
                     lines.append(
                         f"    {upstream_ref} -->|{down_field}: {output_name}| {task_name}"
                     )
@@ -101,7 +127,7 @@ def to_mermaid(
 
     # Sink tasks: edge to end, labeled with output type
     for task_name, task_cls in sinks:
-        output_name = get_output_type(task_cls).__name__
+        output_name = _safe_type_name(get_output_type(task_cls), task_cls)
         lines.append(f"    {task_name} -->|{output_name}| _end_")
 
     return "\n".join(lines) + "\n"
