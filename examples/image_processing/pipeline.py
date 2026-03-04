@@ -296,17 +296,7 @@ def print_report(
         print(f"    {name:20s} {duration:.4f}s")
 
     print()
-    print("  Note: The outer runner sees 'analyze_image' as a single task.")
-    print("  The 4 inner tasks (validate_image, read_image_meta, compute_hash,")
-    print("  build_analysis) are invisible to the outer workflow.")
-
-    print()
-    print("Inner workflow (image_analysis):")
-    print("```mermaid")
-    print(inner_workflow.to_mermaid(), end="")
-    print("```")
-    print()
-    print("Outer workflow (image_processing):")
+    print("Workflow (with inner subgraph):")
     print("```mermaid")
     print(outer_workflow.to_mermaid(), end="")
     print("```")

@@ -399,7 +399,9 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
             for task_name, deps in workflow._dependencies.items()
             if deps is None and not workflow.get_config_fields(task_name)
         ]
-        assert root_task_classes, "job_configuration is None yet no roots found without config_fields"
+        assert root_task_classes, (
+            "job_configuration is None yet no roots found without config_fields"
+        )
 
         input_type = get_input_type(root_task_classes[0])
         try:

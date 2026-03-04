@@ -357,3 +357,108 @@ class TestConfigFieldsVisualization:
         # Dashed edges to both configured tasks
         assert "_job_config_ -.->|label| merge_task" in result
         assert "_job_config_ -.->|count, path| root_cfg" in result
+
+
+# --- workflow_task subgraph tests ---
+
+
+class TestWorkflowTaskSubgraph:
+    """Tests for expanding workflow_task nodes as Mermaid subgraphs."""
+
+    def _build_inner_outer(self) -> tuple:
+        """Build a simple inner+outer workflow pair for testing."""
+        from tests.conftest import AddOne, Double, Stringify
+
+        inner_wf = Workflow("inner", [AddOne, Double])
+
+        from taskekrabbe import workflow_task
+
+        WrappedTask = workflow_task(inner_wf, name="wrapped")
+
+        outer_wf = (
+            Workflow.builder("outer")
+            .add_task(WrappedTask)
+            .add_task(Stringify, depends_on=WrappedTask)
+            .build()
+        )
+        return inner_wf, WrappedTask, outer_wf
+
+    def test_subgraph_block_present(self) -> None:
+        """Subgraph block with correct label appears in output."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        assert 'subgraph wrapped["wrapped"]' in result
+        assert "end" in result
+
+    def test_inner_nodes_prefixed(self) -> None:
+        """Inner nodes are prefixed with wrapper name and have clean labels."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        assert 'wrapped__add_one["add_one"]' in result
+        assert 'wrapped__double["double"]' in result
+
+    def test_inner_edges_present(self) -> None:
+        """Inner edges exist within the subgraph."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        assert "wrapped__add_one -->|NumberOutput| wrapped__double" in result
+
+    def test_outer_edges_redirect_to_inner_root(self) -> None:
+        """Incoming outer edges connect to the inner root node."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        # Start edge should go to inner root (add_one), not wrapper
+        assert "_start_ -->|NumberInput| wrapped__add_one" in result
+        # Should NOT have edge to plain "wrapped"
+        assert "_start_ -->|NumberInput| wrapped\n" not in result
+
+    def test_outer_edges_redirect_from_inner_result(self) -> None:
+        """Outgoing outer edges come from the inner result node."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        # Edge from inner result (double) to stringify
+        assert "wrapped__double -->|NumberOutput| stringify" in result
+
+    def test_non_workflow_task_nodes_normal(self) -> None:
+        """Non-workflow-task nodes render as normal nodes."""
+        _inner, _task, outer = self._build_inner_outer()
+        result = to_mermaid(outer)
+
+        assert 'stringify["stringify"]' in result
+        assert "stringify -->|StringOutput| _end_" in result
+
+    def test_three_task_inner_workflow_subgraph(self) -> None:
+        """workflow_task wrapping a 3-task chain renders all inner nodes/edges."""
+        from tests.conftest import AddOne, Double, Stringify
+
+        inner_wf = Workflow("chain", [AddOne, Double, Stringify])
+
+        from taskekrabbe import workflow_task
+
+        WrappedChain = workflow_task(inner_wf, name="chain_task")
+
+        outer_wf = Workflow("outer_chain", [WrappedChain])
+        result = to_mermaid(outer_wf)
+
+        # Subgraph present
+        assert 'subgraph chain_task["chain_task"]' in result
+
+        # All three inner nodes prefixed
+        assert 'chain_task__add_one["add_one"]' in result
+        assert 'chain_task__double["double"]' in result
+        assert 'chain_task__stringify["stringify"]' in result
+
+        # Inner edges within subgraph
+        assert "chain_task__add_one -->|NumberOutput| chain_task__double" in result
+        assert "chain_task__double -->|NumberOutput| chain_task__stringify" in result
+
+        # Outer start edge redirects to inner root
+        assert "_start_ -->|NumberInput| chain_task__add_one" in result
+
+        # Outer end edge from inner result
+        assert "chain_task__stringify -->|StringOutput| _end_" in result

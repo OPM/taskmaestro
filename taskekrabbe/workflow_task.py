@@ -75,6 +75,7 @@ def workflow_task(
 
     class _WorkflowTask(Task[input_type, output_type]):  # type: ignore[valid-type]
         name = resolved_name
+        _inner_workflow = inner_wf
 
         def run(self, input: Any, ctx: ExecutionContext) -> Any:
             cfg = EmptyConfig() if _all_configured else input
