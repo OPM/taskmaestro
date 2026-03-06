@@ -82,8 +82,12 @@ class FilePath(BaseModel):
     path: str
 
 
-GridCase = ObjectModel[rips.EclipseCase]
-WellPath = ObjectModel[rips.WellPath]
+class GridCase(ObjectModel[rips.EclipseCase]):
+    pass
+
+
+class WellPath(ObjectModel[rips.WellPath]):
+    pass
 
 
 class AddPerforationInput(ObjectModel[rips.WellPath]):
