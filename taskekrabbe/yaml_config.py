@@ -30,6 +30,7 @@ class TaskConfig(BaseModel):
     workflow_input: str | None = None
     name: str | None = None
     depends_on: str | list[str] | dict[str, Any] | None = None
+    config_fields: list[str] | None = None
 
     @model_validator(mode="after")
     def _check_task_or_workflow(self) -> TaskConfig:
@@ -274,9 +275,12 @@ def _load_workflow_only(
             tasks=task_list,
             result_task=result_task_cls,
         )
-        if is_per_task_config:
-            for task_name, fields in per_task_cfg_fields.items():
-                workflow._config_fields[task_name] = set(fields)
+        for task_config in config.workflow.tasks:
+            key = _task_key(task_config)
+            registered_name = task_config.name if task_config.name else task_classes[key].name
+            cfg = task_config.config_fields or per_task_cfg_fields.get(registered_name)
+            if cfg:
+                workflow._config_fields[registered_name] = set(cfg)
     else:
         builder = WorkflowBuilder(
             config.workflow.name,
@@ -288,7 +292,7 @@ def _load_workflow_only(
             deps = task_config.depends_on
             registered_name = name_lookup[key]
             instance_name = task_config.name
-            cfg_fields = per_task_cfg_fields.get(registered_name)
+            cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
             if deps is None:
                 builder.add_task(cls, name=instance_name, config_fields=cfg_fields)
             elif isinstance(deps, str):

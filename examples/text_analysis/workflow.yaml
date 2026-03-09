@@ -9,6 +9,7 @@ workflow:
   name: text_analysis
   tasks:
     - task: pipeline.PrepareText
+      config_fields: [text, title]
     - task: pipeline.GenerateStopWords
     - task: pipeline.ComputeWordStats
       depends_on:
@@ -20,6 +21,7 @@ workflow:
         stop_words: pipeline.GenerateStopWords
     - task: pipeline.ScoreReadability
       depends_on: pipeline.PrepareText
+      config_fields: [text, title]
     - task: pipeline.BuildReport
       depends_on:
         stats: pipeline.ComputeWordStats

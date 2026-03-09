@@ -29,8 +29,10 @@ from collections import Counter
 from pydantic import BaseModel
 
 from taskekrabbe import (
+    EmptyConfig,
     ExecutionContext,
     Job,
+    JobConfiguration,
     Runner,
     Task,
     Workflow,
@@ -128,12 +130,12 @@ class PrepareText(Task[TextInput, TextContent]):
         return TextContent(text=input.text, title=input.title)
 
 
-class GenerateStopWords(Task[TextInput, StopWordsOutput]):
+class GenerateStopWords(Task[EmptyConfig, StopWordsOutput]):
     """Generate the set of stop words to filter out during analysis."""
 
     name = "generate_stop_words"
 
-    def run(self, input: TextInput, ctx: ExecutionContext) -> StopWordsOutput:
+    def run(self, input: EmptyConfig, ctx: ExecutionContext) -> StopWordsOutput:
         ctx.logger.info("Generating stop words list")
         stop_words = [
             "the",
@@ -391,7 +393,7 @@ consistently ranking among the top programming languages worldwide.\
 """
 
 
-def print_report(result: Job[TextInput], timing: TimingHook, workflow: Workflow) -> None:
+def print_report(result: Job[EmptyConfig], timing: TimingHook, workflow: Workflow) -> None:
     """Print the analysis report, timings, and Mermaid diagram."""
     report: AnalysisReport = result.result  # type: ignore[assignment]
 
@@ -428,8 +430,8 @@ def run_python_mode() -> None:
     # Build the DAG workflow
     workflow = (
         Workflow.builder(name="text_analysis")
-        .add_task(PrepareText)  # root (receives TextInput)
-        .add_task(GenerateStopWords)  # root (receives TextInput)
+        .add_task(PrepareText, config_fields=["text", "title"])
+        .add_task(GenerateStopWords)  # root (no input needed)
         .add_task(
             ComputeWordStats,
             depends_on={  # fan-in
@@ -460,13 +462,15 @@ def run_python_mode() -> None:
         .build()
     )
 
-    # Create the job
-    config = TextInput(text=SAMPLE_TEXT, title="Python Overview")
-    job = Job(workflow=workflow, config=config)
+    # Create the job with per-task config
+    job_config = JobConfiguration(
+        {"prepare_text": {"text": SAMPLE_TEXT, "title": "Python Overview"}}
+    )
+    job = Job(workflow=workflow, config=EmptyConfig(), job_configuration=job_config)
 
     # Set up context with a service
     ctx = ExecutionContext()
-    ctx.register("title", config.title)
+    ctx.register("title", "Python Overview")
 
     # Run with hooks
     timing = TimingHook()

@@ -3,14 +3,15 @@
 # Run:
 #   python examples/text_analysis/pipeline.py --yaml --input input.yaml
 
-text: >
-  Python is a high-level programming language known for its clear syntax and
-  readability. Python supports multiple programming paradigms, including
-  structured, object-oriented, and functional programming. Its comprehensive
-  standard library and active community make Python an excellent choice for
-  web development, data science, artificial intelligence, and automation.
-  Python's design philosophy emphasizes code readability and simplicity,
-  allowing developers to express concepts in fewer lines of code compared to
-  languages like C++ or Java. The language continues to grow in popularity,
-  consistently ranking among the top programming languages worldwide.
-title: "Python Overview"
+prepare_text:
+  text: >
+    Python is a high-level programming language known for its clear syntax and
+    readability. Python supports multiple programming paradigms, including
+    structured, object-oriented, and functional programming. Its comprehensive
+    standard library and active community make Python an excellent choice for
+    web development, data science, artificial intelligence, and automation.
+    Python's design philosophy emphasizes code readability and simplicity,
+    allowing developers to express concepts in fewer lines of code compared to
+    languages like C++ or Java. The language continues to grow in popularity,
+    consistently ranking among the top programming languages worldwide.
+  title: "Python Overview"
