@@ -13,28 +13,36 @@ workflow:
   tasks:
     - task: pipeline.ConnectToResInsight
     - task: pipeline.LoadModel
-      depends_on: pipeline.ConnectToResInsight
+      depends_on:
+        resinsight: pipeline.ConnectToResInsight
       config_fields: [path]
     - task: pipeline.LoadWellPath
       name: load_well_path_2
-      depends_on: pipeline.LoadModel
+      depends_on:
+        resinsight: pipeline.ConnectToResInsight
+        grid_case: pipeline.LoadModel
       config_fields: [path]
     - task: pipeline.LoadWellPath
       name: load_well_path_1
-      produces: well1
-      depends_on: pipeline.LoadModel
+      depends_on:
+        resinsight: pipeline.ConnectToResInsight
+        grid_case: pipeline.LoadModel
       config_fields: [path]
     - task: pipeline.AddPerforation
       name: add_perf_1
-      depends_on: load_well_path_1
+      depends_on:
+        resinsight: pipeline.ConnectToResInsight
+        well_path: load_well_path_1
       config_fields: [event_date, start_md, end_md]
     - task: pipeline.AddPerforation
       name: add_perf_2
-      depends_on: load_well_path_2
-      depend_on_object: well1
+      depends_on:
+        resinsight: pipeline.ConnectToResInsight
+        well_path: load_well_path_2
       config_fields: [event_date, start_md, end_md]
     - task: pipeline.ExportCompletions
       depends_on:
+        resinsight: pipeline.ConnectToResInsight
         grid_case: pipeline.LoadModel
         perforation_1: add_perf_1
         perforation_2: add_perf_2

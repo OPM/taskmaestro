@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import rips
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from taskekrabbe import (
     EmptyConfig,
@@ -70,10 +70,8 @@ class PrintTimestampHook(BaseHook):
 # ---------------------------------------------------------------------------
 
 
-class ConnectionOutput(BaseModel):
-    """Output of ConnectToResInsight: the gRPC port."""
-
-    port: int
+class RipsInstance(ObjectModel[rips.Instance]):
+    pass
 
 
 class FilePath(BaseModel):
@@ -90,9 +88,32 @@ class WellPath(ObjectModel[rips.WellPath]):
     pass
 
 
-class AddPerforationInput(ObjectModel[rips.WellPath]):
-    """Input for AddPerforation: well from upstream, MD range from config."""
+class LoadModelInput(BaseModel):
+    """Input for LoadModel: RipsInstance from upstream, file path from config."""
 
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    resinsight: RipsInstance
+    path: str
+
+
+class LoadWellPathInput(BaseModel):
+    """Input for LoadWellPath: RipsInstance from upstream, file path from config."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    resinsight: RipsInstance
+    grid_case: GridCase
+    path: str
+
+
+class AddPerforationInput(BaseModel):
+    """Input for AddPerforation: RipsInstance + well from upstream, MD range from config."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    resinsight: RipsInstance
+    well_path: WellPath
     event_date: str
     start_md: float
     end_md: float
@@ -110,40 +131,37 @@ class PerforationOutput(ObjectModel[rips.WellPath]):
 # ---------------------------------------------------------------------------
 
 
-class ConnectToResInsight(Task[EmptyConfig, ConnectionOutput]):
-    """Connect to a running ResInsight instance and register it in context."""
+class ConnectToResInsight(Task[EmptyConfig, RipsInstance]):
+    """Connect to a running ResInsight instance."""
 
     name = "connect_to_resinsight"
 
-    def run(self, input: EmptyConfig, ctx: ExecutionContext) -> ConnectionOutput:
+    def run(self, input: EmptyConfig, ctx: ExecutionContext) -> RipsInstance:
         ctx.logger.info("Connecting to ResInsight...")
         instance = rips.Instance.find()
-        ctx.register("resinsight", instance)
-        port = int(instance.location.split(":")[1])
-        ctx.logger.info("Connected to ResInsight on port %d", port)
-        return ConnectionOutput(port=port)
+        ctx.logger.info("Connected to ResInsight on %s", instance.location)
+        return RipsInstance(value=instance)
 
 
-class LoadModel(Task[FilePath, GridCase]):
+class LoadModel(Task[LoadModelInput, GridCase]):
     """Load the reservoir model (.egrid) into ResInsight."""
 
     name = "load_model"
 
-    def run(self, input: FilePath, ctx: ExecutionContext) -> GridCase:
-        instance: rips.Instance = ctx.resolve("resinsight")
+    def run(self, input: LoadModelInput, ctx: ExecutionContext) -> GridCase:
         ctx.logger.info("Loading model from %s", input.path)
-        grid_case = instance.project.load_case(input.path)
+        grid_case = input.resinsight.value.project.load_case(input.path)
         ctx.logger.info("Loaded case '%s' (id=%d)", grid_case.name, grid_case.id)
         return GridCase(value=grid_case)
 
 
-class LoadWellPath(Task[FilePath, WellPath]):
+class LoadWellPath(Task[LoadWellPathInput, WellPath]):
     """Import a well path file into ResInsight."""
 
     name = "load_well_path"
 
-    def run(self, input: FilePath, ctx: ExecutionContext) -> WellPath:
-        instance: rips.Instance = ctx.resolve("resinsight")
+    def run(self, input: LoadWellPathInput, ctx: ExecutionContext) -> WellPath:
+        instance = input.resinsight.value
         ctx.logger.info("Importing well path from %s", input.path)
         collection = instance.project.well_path_collection()
         well_path = collection.import_well_path(file_name=input.path)
@@ -157,10 +175,11 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
     name = "add_perforation"
 
     def run(self, input: AddPerforationInput, ctx: ExecutionContext) -> PerforationOutput:
-        instance: rips.Instance = ctx.resolve("resinsight")
+        instance = input.resinsight.value
+        well = input.well_path.value
         ctx.logger.info(
             "Adding perforation to '%s' at MD %.1f-%.1f on %s",
-            input.value.name,
+            well.name,
             input.start_md,
             input.end_md,
             input.event_date,
@@ -169,7 +188,7 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
         timeline = collection.event_timeline()
         timeline.add_perf_event(
             event_date=input.event_date,
-            well_path=input.value,
+            well_path=well,
             start_md=input.start_md,
             end_md=input.end_md,
             diameter=0.1,
@@ -178,7 +197,7 @@ class AddPerforation(Task[AddPerforationInput, PerforationOutput]):
         )
 
         return PerforationOutput(
-            value=input.value,
+            value=well,
             start_md=input.start_md,
             end_md=input.end_md,
         )
@@ -194,6 +213,9 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
     name = "export_completions"
 
     class Inputs(BaseModel):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        resinsight: RipsInstance
         grid_case: GridCase
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
@@ -216,7 +238,7 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
             input.export_path,
         )
 
-        instance: rips.Instance = ctx.resolve("resinsight")
+        instance = input.resinsight.value
         collection = instance.project.descendants(rips.WellPathCollection)[0]
         timeline = collection.event_timeline()
         timeline.set_timestamp(timestamp=input.event_date)
@@ -244,36 +266,49 @@ workflow = (
     .add_task(ConnectToResInsight)
     .add_task(
         LoadModel,
-        depends_on=ConnectToResInsight,
+        depends_on={"resinsight": ConnectToResInsight},
         config_fields=["path"],
     )
     .add_task(
         LoadWellPath,
         name="load_well_path_1",
-        depends_on=LoadModel,
+        depends_on={
+            "resinsight": ConnectToResInsight,
+            "grid_case": LoadModel,
+        },
         config_fields=["path"],
     )
     .add_task(
         LoadWellPath,
         name="load_well_path_2",
-        depends_on=LoadModel,
+        depends_on={
+            "resinsight": ConnectToResInsight,
+            "grid_case": LoadModel,
+        },
         config_fields=["path"],
     )
     .add_task(
         AddPerforation,
         name="add_perf_1",
-        depends_on="load_well_path_1",
+        depends_on={
+            "resinsight": ConnectToResInsight,
+            "well_path": "load_well_path_1",
+        },
         config_fields=["event_date", "start_md", "end_md"],
     )
     .add_task(
         AddPerforation,
         name="add_perf_2",
-        depends_on="load_well_path_2",
+        depends_on={
+            "resinsight": ConnectToResInsight,
+            "well_path": "load_well_path_2",
+        },
         config_fields=["event_date", "start_md", "end_md"],
     )
     .add_task(
         ExportCompletions,
         depends_on={
+            "resinsight": ConnectToResInsight,
             "grid_case": LoadModel,
             "perforation_1": "add_perf_1",
             "perforation_2": "add_perf_2",
