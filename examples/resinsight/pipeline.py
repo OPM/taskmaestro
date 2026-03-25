@@ -33,7 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import rips
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from taskekrabbe import (
     EmptyConfig,
@@ -71,7 +71,7 @@ class PrintTimestampHook(BaseHook):
 
 
 class RipsInstance(ObjectModel[rips.Instance]):
-    pass
+    """Active connection to a running ResInsight application."""
 
 
 class FilePath(BaseModel):
@@ -81,49 +81,49 @@ class FilePath(BaseModel):
 
 
 class GridCase(ObjectModel[rips.EclipseCase]):
-    pass
+    """Loaded Eclipse reservoir grid case."""
 
 
 class WellPath(ObjectModel[rips.WellPath]):
-    pass
+    """Imported well trajectory."""
 
 
 class LoadModelInput(BaseModel):
-    """Input for LoadModel: RipsInstance from upstream, file path from config."""
+    """Upstream ResInsight connection and path to the .EGRID file."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     resinsight: RipsInstance
-    path: str
+    path: str = Field(description="Path to the Eclipse grid file (.EGRID)")
 
 
 class LoadWellPathInput(BaseModel):
-    """Input for LoadWellPath: RipsInstance from upstream, file path from config."""
+    """Upstream ResInsight connection, grid case, and path to the well deviation file."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     resinsight: RipsInstance
     grid_case: GridCase
-    path: str
+    path: str = Field(description="Path to the well path file (.dev)")
 
 
 class AddPerforationInput(BaseModel):
-    """Input for AddPerforation: RipsInstance + well from upstream, MD range from config."""
+    """Upstream ResInsight connection, well path, and perforation interval parameters."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     resinsight: RipsInstance
     well_path: WellPath
-    event_date: str
-    start_md: float
-    end_md: float
+    event_date: str = Field(description="Perforation event date in ISO format (YYYY-MM-DD)", examples=["2024-01-15"])
+    start_md: float = Field(description="Start measured depth of the perforation interval (m)", ge=0)
+    end_md: float = Field(description="End measured depth of the perforation interval (m)", ge=0)
 
 
 class PerforationOutput(ObjectModel[rips.WellPath]):
-    """Output of AddPerforation: perforation interval details."""
+    """Well path with perforation interval details."""
 
-    start_md: float
-    end_md: float
+    start_md: float = Field(description="Start measured depth (m)")
+    end_md: float = Field(description="End measured depth (m)")
 
 
 # ---------------------------------------------------------------------------
@@ -213,18 +213,22 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
     name = "export_completions"
 
     class Inputs(BaseModel):
+        """Fan-in: merges the grid case and both perforation branches for export."""
+
         model_config = ConfigDict(arbitrary_types_allowed=True)
 
         resinsight: RipsInstance
         grid_case: GridCase
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
-        event_date: str
-        export_path: str
+        event_date: str = Field(description="Timestamp written into the exported schedule file", examples=["2024-05-01"])
+        export_path: str = Field(description="Output path for the .sch completions file")
 
     class Outputs(BaseModel):
-        export_file: str
-        well_path_names: list[str]
+        """Exported completions summary."""
+
+        export_file: str = Field(description="Path to the generated completions file")
+        well_path_names: list[str] = Field(description="Names of the well paths included in the export")
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
         eclipse_case = input.grid_case.value
