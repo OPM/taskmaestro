@@ -26,15 +26,15 @@ jobs:
 
       - name: Ruff check
         if: matrix.python-version == '3.12'
-        run: ruff check taskekrabbe/ tests/
+        run: ruff check taskmaestro/ tests/
 
       - name: Ruff format check
         if: matrix.python-version == '3.12'
-        run: ruff format --check taskekrabbe/ tests/
+        run: ruff format --check taskmaestro/ tests/
 
       - name: Mypy type check
         if: matrix.python-version == '3.12'
-        run: mypy taskekrabbe
+        run: mypy taskmaestro
 
       - name: Run tests with coverage
-        run: pytest --cov=taskekrabbe --cov-report=term-missing
+        run: pytest --cov=taskmaestro --cov-report=term-missing

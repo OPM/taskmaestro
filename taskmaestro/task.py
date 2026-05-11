@@ -8,7 +8,7 @@ from typing import Any, Generic, TypeVar, get_args
 
 from pydantic import BaseModel
 
-from taskekrabbe.context import ExecutionContext
+from taskmaestro.context import ExecutionContext
 
 I = TypeVar("I", bound=BaseModel)
 O = TypeVar("O", bound=BaseModel)

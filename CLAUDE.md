@@ -8,25 +8,25 @@ Typed DAG task workflow library with Pydantic models, lifecycle hooks, and fail-
 source .venv/bin/activate          # activate venv
 pip install -e ".[dev]"            # install with dev deps
 pytest -v                          # run tests
-ruff check taskekrabbe/ tests/ examples/ # lint
-ruff format taskekrabbe/ tests/ examples/ # format
-mypy taskekrabbe               # type check (strict mode)
+ruff check taskmaestro/ tests/ examples/ # lint
+ruff format taskmaestro/ tests/ examples/ # format
+mypy taskmaestro               # type check (strict mode)
 ```
 
 ## Architecture
 
 | File | Responsibility |
 |---|---|
-| `taskekrabbe/exceptions.py` | Exception hierarchy (no internal deps) |
-| `taskekrabbe/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
-| `taskekrabbe/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
-| `taskekrabbe/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
-| `taskekrabbe/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
-| `taskekrabbe/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
-| `taskekrabbe/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
-| `taskekrabbe/hooks/logging.py` | `LoggingHook` — logs events via `logging` module |
-| `taskekrabbe/hooks/timing.py` | `TimingHook` — records durations via `time.monotonic()` |
-| `taskekrabbe/hooks/persistence.py` | `ResultPersistenceHook` — writes `{task_name}.json` per task |
+| `taskmaestro/exceptions.py` | Exception hierarchy (no internal deps) |
+| `taskmaestro/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
+| `taskmaestro/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
+| `taskmaestro/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
+| `taskmaestro/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
+| `taskmaestro/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
+| `taskmaestro/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
+| `taskmaestro/hooks/logging.py` | `LoggingHook` — logs events via `logging` module |
+| `taskmaestro/hooks/timing.py` | `TimingHook` — records durations via `time.monotonic()` |
+| `taskmaestro/hooks/persistence.py` | `ResultPersistenceHook` — writes `{task_name}.json` per task |
 
 ## Key Patterns
 

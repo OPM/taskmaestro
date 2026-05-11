@@ -7,14 +7,14 @@ from typing import TYPE_CHECKING, Any, Union
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from taskekrabbe.job import JobConfiguration
+    from taskmaestro.job import JobConfiguration
 
-from taskekrabbe.exceptions import (
+from taskmaestro.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     WorkflowDefinitionError,
 )
-from taskekrabbe.task import Task, get_input_type, get_output_type
+from taskmaestro.task import Task, get_input_type, get_output_type
 
 # Stored dependency types after name resolution:
 #   None              — root task
@@ -345,7 +345,7 @@ class Workflow:
 
     def to_mermaid(self, *, job_configuration: JobConfiguration | None = None) -> str:
         """Return a Mermaid diagram string for this workflow."""
-        from taskekrabbe.visualization import to_mermaid
+        from taskmaestro.visualization import to_mermaid
 
         return to_mermaid(self, job_configuration=job_configuration)
 

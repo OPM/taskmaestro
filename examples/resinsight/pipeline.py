@@ -35,7 +35,7 @@ from typing import Any
 import rips
 from pydantic import BaseModel, ConfigDict, Field
 
-from taskekrabbe import (
+from taskmaestro import (
     EmptyConfig,
     ExecutionContext,
     Job,
@@ -45,8 +45,8 @@ from taskekrabbe import (
     Task,
     Workflow,
 )
-from taskekrabbe.hooks import LoggingHook, TimingHook
-from taskekrabbe.hooks.base import BaseHook
+from taskmaestro.hooks import LoggingHook, TimingHook
+from taskmaestro.hooks.base import BaseHook
 
 # ---------------------------------------------------------------------------
 # Custom hook — prints task start/end timestamps to stdout
@@ -400,7 +400,7 @@ def run_python_mode() -> None:
 
 def run_yaml_mode(workflow_path: str, input_path: str) -> None:
     """Run the pipeline from YAML workflow and input files."""
-    from taskekrabbe.yaml_config import load_workflow_from_yaml
+    from taskmaestro.yaml_config import load_workflow_from_yaml
 
     loaded = load_workflow_from_yaml(workflow_path, input_path)
     result = loaded.run()

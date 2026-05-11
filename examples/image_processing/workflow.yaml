@@ -19,5 +19,5 @@ workflow:
 
 runner:
   hooks:
-    - hook: taskekrabbe.hooks.logging.LoggingHook
-    - hook: taskekrabbe.hooks.timing.TimingHook
+    - hook: taskmaestro.hooks.logging.LoggingHook
+    - hook: taskmaestro.hooks.timing.TimingHook

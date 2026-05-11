@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
-from taskekrabbe import (
+from taskmaestro import (
     ExecutionContext,
     Job,
     JobConfiguration,
@@ -18,8 +18,8 @@ from taskekrabbe import (
     WorkflowDefinitionError,
     workflow_task,
 )
-from taskekrabbe.hooks.base import BaseHook
-from taskekrabbe.task import get_input_type, get_output_type
+from taskmaestro.hooks.base import BaseHook
+from taskmaestro.task import get_input_type, get_output_type
 
 # --- Models ---
 

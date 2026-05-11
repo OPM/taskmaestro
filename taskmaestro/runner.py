@@ -9,15 +9,15 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskekrabbe.context import ExecutionContext
-from taskekrabbe.exceptions import (
+from taskmaestro.context import ExecutionContext
+from taskmaestro.exceptions import (
     JobStateError,
     TaskOutputTypeError,
     TaskTimeoutError,
 )
-from taskekrabbe.hooks.base import BaseHook, Event
-from taskekrabbe.job import Job, JobStatus, TaskResult, TaskStatus
-from taskekrabbe.task import get_input_type, get_output_type
+from taskmaestro.hooks.base import BaseHook, Event
+from taskmaestro.job import Job, JobStatus, TaskResult, TaskStatus
+from taskmaestro.task import get_input_type, get_output_type
 
 
 class Runner:

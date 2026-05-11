@@ -1,7 +1,7 @@
-# Taskekrabbe
+# Taskmaestro
 
 <p align="center">
-  <img src="taskekrabbe.png" alt="Taskekrabbe" width="300">
+  <img src="taskmaestro.png" alt="Taskmaestro" width="300">
 </p>
 
 A Python 3.12+ library for defining and executing typed DAG task workflows with Pydantic models, lifecycle hooks, and fail-fast semantics.
@@ -20,7 +20,7 @@ pip install -e ".[dev]"
 
 ```python
 from pydantic import BaseModel
-from taskekrabbe import Task, Workflow, Job, Runner, ExecutionContext
+from taskmaestro import Task, Workflow, Job, Runner, ExecutionContext
 
 class NumberInput(BaseModel):
     value: int
@@ -48,7 +48,7 @@ print(result.result.value)  # 12
 
 ```python
 from pydantic import BaseModel
-from taskekrabbe import Task, Workflow, Job, Runner, ExecutionContext
+from taskmaestro import Task, Workflow, Job, Runner, ExecutionContext
 
 class Input(BaseModel):
     value: int
@@ -127,7 +127,7 @@ Named instances can be referenced as string dependencies (`depends_on="well_1"`)
 `JobConfiguration` provides static config values for individual tasks, merged with upstream outputs at runtime. Declare which fields come from config with `config_fields`:
 
 ```python
-from taskekrabbe import EmptyConfig, Job, JobConfiguration, Workflow
+from taskmaestro import EmptyConfig, Job, JobConfiguration, Workflow
 
 workflow = (
     Workflow.builder(name="configured")
@@ -180,7 +180,7 @@ workflow = (
 `ObjectModel[T]` wraps arbitrary (non-Pydantic) objects so they can flow through workflows. Use it as a type alias for simple wrappers, or subclass it to add extra fields:
 
 ```python
-from taskekrabbe import ObjectModel
+from taskmaestro import ObjectModel
 
 # Type alias — no extra fields needed
 GridCase = ObjectModel[rips.EclipseCase]
@@ -226,8 +226,8 @@ workflow:
 
 runner:
   hooks:
-    - hook: taskekrabbe.hooks.logging.LoggingHook
-    - hook: taskekrabbe.hooks.timing.TimingHook
+    - hook: taskmaestro.hooks.logging.LoggingHook
+    - hook: taskmaestro.hooks.timing.TimingHook
 
 context:
   services:
@@ -243,7 +243,7 @@ title: "Python Overview"
 Load and run:
 
 ```python
-from taskekrabbe import load_workflow_from_yaml, run_workflow_from_yaml
+from taskmaestro import load_workflow_from_yaml, run_workflow_from_yaml
 
 # Load for inspection, then run
 loaded = load_workflow_from_yaml("workflow.yaml", "input.yaml")
@@ -324,5 +324,5 @@ source .venv/bin/activate
 pytest -v                  # run tests
 ruff check .               # lint
 ruff format .              # format
-mypy taskekrabbe       # type check (strict)
+mypy taskmaestro       # type check (strict)
 ```

@@ -5,11 +5,11 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING
 
-from taskekrabbe.task import get_input_type, get_output_type
+from taskmaestro.task import get_input_type, get_output_type
 
 if TYPE_CHECKING:
-    from taskekrabbe.job import JobConfiguration
-    from taskekrabbe.workflow import Workflow
+    from taskmaestro.job import JobConfiguration
+    from taskmaestro.workflow import Workflow
 
 
 def _safe_type_name(tp: type, context_cls: type | None = None) -> str:
@@ -111,7 +111,7 @@ def to_mermaid(
     Tasks created via ``workflow_task`` are expanded into Mermaid subgraphs
     showing the inner workflow's structure.
     """
-    from taskekrabbe.workflow import _extract_upstream_names
+    from taskmaestro.workflow import _extract_upstream_names
 
     lines: list[str] = ["---", f"title: {workflow.name}", "---", "graph TD"]
 

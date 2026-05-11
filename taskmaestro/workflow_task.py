@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from taskekrabbe.context import ExecutionContext
-from taskekrabbe.exceptions import WorkflowDefinitionError
-from taskekrabbe.job import EmptyConfig, Job, JobConfiguration, JobStatus
-from taskekrabbe.runner import Runner
-from taskekrabbe.task import Task, get_input_type, get_output_type
+from taskmaestro.context import ExecutionContext
+from taskmaestro.exceptions import WorkflowDefinitionError
+from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
+from taskmaestro.runner import Runner
+from taskmaestro.task import Task, get_input_type, get_output_type
 
 
 def workflow_task(

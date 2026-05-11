@@ -7,9 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskekrabbe.hooks.base import BaseHook
-from taskekrabbe.job import Job
-from taskekrabbe.task import Task
+from taskmaestro.hooks.base import BaseHook
+from taskmaestro.job import Job
+from taskmaestro.task import Task
 
 
 class LoggingHook(BaseHook):
@@ -17,7 +17,7 @@ class LoggingHook(BaseHook):
 
     def __init__(self, level: int = logging.INFO) -> None:
         self._level = level
-        self._logger = logging.getLogger("taskekrabbe.hooks.logging")
+        self._logger = logging.getLogger("taskmaestro.hooks.logging")
 
     def on_job_start(self, job: Job[Any]) -> None:
         self._logger.log(self._level, "Job started: workflow=%s", job.workflow.name)

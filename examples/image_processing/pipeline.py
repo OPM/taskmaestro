@@ -33,7 +33,7 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from taskekrabbe import (
+from taskmaestro import (
     ExecutionContext,
     Job,
     Runner,
@@ -41,7 +41,7 @@ from taskekrabbe import (
     Workflow,
     workflow_task,
 )
-from taskekrabbe.hooks import LoggingHook, TimingHook
+from taskmaestro.hooks import LoggingHook, TimingHook
 
 # ---------------------------------------------------------------------------
 # Models
@@ -305,7 +305,7 @@ def print_report(
 def run_python_mode() -> None:
     """Run the pipeline using the Python API."""
     _dir = Path(__file__).resolve().parent
-    image_path = str(_dir / ".." / ".." / "taskekrabbe.png")
+    image_path = str(_dir / ".." / ".." / "taskmaestro.png")
 
     # Build the outer workflow
     outer_workflow = (
@@ -329,7 +329,7 @@ def run_python_mode() -> None:
 
 def run_yaml_mode(workflow_path: str, input_path: str) -> None:
     """Run the pipeline from the YAML workflow and input files."""
-    from taskekrabbe.yaml_config import load_workflow_from_yaml
+    from taskmaestro.yaml_config import load_workflow_from_yaml
 
     loaded = load_workflow_from_yaml(workflow_path, input_path)
     result = loaded.run()

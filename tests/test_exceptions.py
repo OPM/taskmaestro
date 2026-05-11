@@ -1,6 +1,6 @@
 """Tests for the exception hierarchy."""
 
-from taskekrabbe.exceptions import (
+from taskmaestro.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     JobStateError,

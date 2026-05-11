@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from taskekrabbe import (
+from taskmaestro import (
     EmptyConfig,
     ExecutionContext,
     Job,
@@ -15,8 +15,8 @@ from taskekrabbe import (
     Task,
     Workflow,
 )
-from taskekrabbe.exceptions import JobStateError
-from taskekrabbe.job import TaskStatus
+from taskmaestro.exceptions import JobStateError
+from taskmaestro.job import TaskStatus
 from tests.conftest import (
     AddOne,
     AddOneB,
@@ -270,7 +270,7 @@ class TestAlarmUnavailable:
         wf = Workflow(name="test", tasks=[AddOne])
         job = Job(workflow=wf, config=NumberInput(value=1))
         with (
-            patch("taskekrabbe.runner.signal.signal", side_effect=AttributeError),
+            patch("taskmaestro.runner.signal.signal", side_effect=AttributeError),
             pytest.warns(UserWarning, match="signal.alarm not available"),
         ):
             result = Runner().run(job, ctx=ctx, timeout_seconds=60)

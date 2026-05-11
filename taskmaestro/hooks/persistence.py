@@ -7,9 +7,9 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from taskekrabbe.hooks.base import BaseHook
-from taskekrabbe.job import Job
-from taskekrabbe.task import Task
+from taskmaestro.hooks.base import BaseHook
+from taskmaestro.job import Job
+from taskmaestro.task import Task
 
 
 class ResultPersistenceHook(BaseHook):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from taskekrabbe import ExecutionContext, ObjectModel, Task, Workflow, to_mermaid
+from taskmaestro import ExecutionContext, ObjectModel, Task, Workflow, to_mermaid
 
 # --- Models for fan-in DAG test ---
 
@@ -266,7 +266,7 @@ class TestGenericAliasResolution:
 
     def test_alias_fallback_without_context(self) -> None:
         """Without context_cls, generic types fall back to escaped brackets."""
-        from taskekrabbe.visualization import _safe_type_name
+        from taskmaestro.visualization import _safe_type_name
 
         # No context class — can't scan any module, uses HTML escaping
         result = _safe_type_name(WrappedStr)
@@ -275,7 +275,7 @@ class TestGenericAliasResolution:
 
     def test_alias_fallback_no_match_in_module(self) -> None:
         """Generic type not aliased in the context module uses escaped brackets."""
-        from taskekrabbe.visualization import _safe_type_name
+        from taskmaestro.visualization import _safe_type_name
 
         # ObjectModel[int] is not assigned to any name in this module
         DynamicType = ObjectModel[int]
@@ -371,7 +371,7 @@ class TestWorkflowTaskSubgraph:
 
         inner_wf = Workflow("inner", [AddOne, Double])
 
-        from taskekrabbe import workflow_task
+        from taskmaestro import workflow_task
 
         WrappedTask = workflow_task(inner_wf, name="wrapped")
 
@@ -438,7 +438,7 @@ class TestWorkflowTaskSubgraph:
 
         inner_wf = Workflow("chain", [AddOne, Double, Stringify])
 
-        from taskekrabbe import workflow_task
+        from taskmaestro import workflow_task
 
         WrappedChain = workflow_task(inner_wf, name="chain_task")
 

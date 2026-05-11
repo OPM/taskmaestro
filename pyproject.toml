@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "taskekrabbe"
+name = "taskmaestro"
 version = "0.1.0"
 description = "A Python 3.12+ library for defining and executing typed DAG task workflows"
 requires-python = ">=3.12"

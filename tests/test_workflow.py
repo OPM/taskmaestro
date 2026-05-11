@@ -5,13 +5,13 @@ from __future__ import annotations
 import pytest
 from pydantic import BaseModel
 
-from taskekrabbe import (
+from taskmaestro import (
     ExecutionContext,
     Task,
     Workflow,
     WorkflowDefinitionError,
 )
-from taskekrabbe.exceptions import CycleDetectedError, IncompleteInputError
+from taskmaestro.exceptions import CycleDetectedError, IncompleteInputError
 from tests.conftest import (
     AddOne,
     AddOneB,

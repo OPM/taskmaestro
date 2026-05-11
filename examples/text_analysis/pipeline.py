@@ -28,7 +28,7 @@ from collections import Counter
 
 from pydantic import BaseModel
 
-from taskekrabbe import (
+from taskmaestro import (
     EmptyConfig,
     ExecutionContext,
     Job,
@@ -37,7 +37,7 @@ from taskekrabbe import (
     Task,
     Workflow,
 )
-from taskekrabbe.hooks import LoggingHook, TimingHook
+from taskmaestro.hooks import LoggingHook, TimingHook
 
 # ---------------------------------------------------------------------------
 # Models
@@ -482,7 +482,7 @@ def run_python_mode() -> None:
 
 def run_yaml_mode(workflow_path: str, input_path: str) -> None:
     """Run the pipeline from the YAML workflow and input files."""
-    from taskekrabbe.yaml_config import load_workflow_from_yaml
+    from taskmaestro.yaml_config import load_workflow_from_yaml
 
     loaded = load_workflow_from_yaml(workflow_path, input_path)
     result = loaded.run()

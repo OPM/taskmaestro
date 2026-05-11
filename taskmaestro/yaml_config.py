@@ -11,13 +11,13 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
-from taskekrabbe.context import ExecutionContext
-from taskekrabbe.exceptions import ConfigLoadError
-from taskekrabbe.hooks.base import BaseHook
-from taskekrabbe.job import EmptyConfig, Job, JobConfiguration
-from taskekrabbe.runner import Runner
-from taskekrabbe.task import Task, get_input_type
-from taskekrabbe.workflow import Workflow, WorkflowBuilder
+from taskmaestro.context import ExecutionContext
+from taskmaestro.exceptions import ConfigLoadError
+from taskmaestro.hooks.base import BaseHook
+from taskmaestro.job import EmptyConfig, Job, JobConfiguration
+from taskmaestro.runner import Runner
+from taskmaestro.task import Task, get_input_type
+from taskmaestro.workflow import Workflow, WorkflowBuilder
 
 # --- Pydantic schema models for YAML validation ---
 
@@ -160,7 +160,7 @@ def _load_workflow_only(
 
     Returns (workflow, job_configuration).
     """
-    from taskekrabbe.workflow_task import workflow_task as _workflow_task
+    from taskmaestro.workflow_task import workflow_task as _workflow_task
 
     # 1. Parse workflow YAML
     try:

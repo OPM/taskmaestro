@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from taskekrabbe import ObjectModel
+from taskmaestro import ObjectModel
 
 
 class FakeClient:
