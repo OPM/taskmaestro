@@ -1,5 +1,7 @@
 """Workflow Runner: typed DAG task workflows with Pydantic models."""
 
+__version__ = "0.1.0"
+
 from taskmaestro.context import ExecutionContext
 from taskmaestro.exceptions import (
     ConfigLoadError,

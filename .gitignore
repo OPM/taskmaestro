@@ -7,3 +7,9 @@ __pycache__/
 .ruff_cache/
 dist/
 build/
+.claude/
+.bash_history
+.coverage
+docker-utils/
+instructions.txt
+workflow-runner-design-doc.md
