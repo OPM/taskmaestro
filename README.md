@@ -145,6 +145,43 @@ job = Job(workflow=workflow, config=EmptyConfig(), job_configuration=job_config)
 result = Runner().run(job)
 ```
 
+## Nested Workflows
+
+A workflow can be wrapped as a typed task and used inside a larger workflow. Its input
+type is inferred from its root task and its output type from its result task, so normal
+workflow type validation still applies at both boundaries:
+
+```python
+inner = Workflow(name="normalize", tasks=[CleanText, NormalizeText])
+Normalize = inner.as_task(name="normalize_text")
+
+outer = (
+    Workflow.builder("document_pipeline")
+    .add_task(LoadDocument)
+    .add_task(Normalize, depends_on=LoadDocument)
+    .add_task(IndexDocument, depends_on=Normalize)
+    .build()
+)
+```
+
+`workflow_task(inner, name="normalize_text")` is the equivalent factory-style API.
+The inner workflow must have exactly one root that receives input from the outer
+workflow. Roots supplied entirely by `JobConfiguration` are excluded; if every root is
+configured, pass that configuration to `as_task()` and the wrapper accepts
+`EmptyConfig`:
+
+```python
+ConfiguredPipeline = inner.as_task(
+    name="configured_pipeline",
+    job_configuration=inner_config,
+)
+```
+
+The inner tasks share the outer `ExecutionContext`, including services, scratch directory,
+and correlation ID. The wrapper is an opaque lifecycle boundary: outer runner hooks and
+`Job.task_results` see one wrapper task, while an inner failure is reported with the inner
+workflow and failed task names. Mermaid visualization expands wrappers as subgraphs.
+
 ## Output Field Routing
 
 Route a specific field from an upstream task's output (rather than the whole output) using `(Task, "field")` tuples:
@@ -255,6 +292,26 @@ result = run_workflow_from_yaml("workflow.yaml", "input.yaml")
 
 YAML supports named task instances (`name:`), per-task input config (keyed by task name in the input file), fan-in dicts, and output field routing via `[task, field]` lists.
 
+Use `workflow:` instead of `task:` to compose another YAML workflow. Paths are resolved
+relative to the containing workflow file, and `workflow_input:` optionally supplies the
+inner workflow's per-task configuration:
+
+```yaml
+workflow:
+  name: document_pipeline
+  tasks:
+    - task: pipeline.LoadDocument
+    - workflow: normalize/workflow.yaml
+      workflow_input: normalize/input.yaml
+      name: normalize_text
+      depends_on: pipeline.LoadDocument
+    - task: pipeline.IndexDocument
+      depends_on: normalize_text
+```
+
+The same root/result type inference and single-unconfigured-root requirement apply as for
+`Workflow.as_task()`.
+
 ## Visualization
 
 Generate Mermaid diagrams of workflow topology:
@@ -303,12 +360,13 @@ WorkflowRunnerError (base)
 
 ## Examples
 
-Two full example pipelines are included in the `examples/` directory:
+Three full example pipelines are included in the `examples/` directory:
 
 | Example | Features |
 |---|---|
 | `examples/text_analysis/` | DAG with fan-out/fan-in, output field routing, inline `Inputs`/`Outputs` classes, YAML config, Mermaid visualization |
 | `examples/resinsight/` | `ObjectModel[T]` for gRPC objects, `JobConfiguration` with per-task config, named task instances, `config_fields`, YAML config |
+| `examples/image_processing/` | Nested workflows through `Workflow.as_task()` and YAML `workflow:`, typed boundaries, expanded Mermaid subgraph |
 
 Run an example:
 

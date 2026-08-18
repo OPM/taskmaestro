@@ -11,7 +11,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.12", "3.13"]
+        python-version: ["3.12", "3.13", "3.14"]
 
     steps:
       - uses: actions/checkout@v4
@@ -25,15 +25,12 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Ruff check
-        if: matrix.python-version == '3.12'
         run: ruff check taskmaestro/ tests/
 
       - name: Ruff format check
-        if: matrix.python-version == '3.12'
         run: ruff format --check taskmaestro/ tests/
 
       - name: Mypy type check
-        if: matrix.python-version == '3.12'
         run: mypy taskmaestro
 
       - name: Run tests with coverage
