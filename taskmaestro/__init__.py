@@ -1,13 +1,24 @@
 """Workflow Runner: typed DAG task workflows with Pydantic models."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.discovery import (
+    TASK_ENTRY_POINT_GROUP,
+    WORKFLOW_ENTRY_POINT_GROUP,
+    get_registered_task,
+    get_registered_workflow,
+    registered_task_names,
+    registered_tasks,
+    registered_workflow_names,
+    registered_workflows,
+)
 from taskmaestro.exceptions import (
     ConfigLoadError,
     CycleDetectedError,
     IncompleteInputError,
     JobStateError,
+    PluginLoadError,
     TaskExecutionError,
     TaskOutputTypeError,
     TaskTimeoutError,
@@ -28,6 +39,8 @@ from taskmaestro.yaml_config import (
 )
 
 __all__ = [
+    "TASK_ENTRY_POINT_GROUP",
+    "WORKFLOW_ENTRY_POINT_GROUP",
     "ConfigLoadError",
     "CycleDetectedError",
     "EmptyConfig",
@@ -39,6 +52,7 @@ __all__ = [
     "JobStatus",
     "LoadedWorkflow",
     "ObjectModel",
+    "PluginLoadError",
     "Runner",
     "Task",
     "TaskExecutionError",
@@ -50,7 +64,13 @@ __all__ = [
     "WorkflowBuilder",
     "WorkflowDefinitionError",
     "WorkflowRunnerError",
+    "get_registered_task",
+    "get_registered_workflow",
     "load_workflow_from_yaml",
+    "registered_task_names",
+    "registered_tasks",
+    "registered_workflow_names",
+    "registered_workflows",
     "run_workflow_from_yaml",
     "to_mermaid",
     "workflow_task",
