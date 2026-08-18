@@ -196,9 +196,39 @@ grid = GridCase(value=eclipse_case)
 print(grid.value.name)
 ```
 
+## Plugin discovery
+
+Installed packages can publish tasks and workflows using standard Python entry points:
+
+```toml
+[project.entry-points."taskmaestro.tasks"]
+"acme.prepare" = "acme_tasks.prepare:Prepare"
+
+[project.entry-points."taskmaestro.workflows"]
+"acme.analysis" = "acme_tasks.workflows:analysis_workflow"
+```
+
+A task entry point must resolve to a `Task` subclass and a workflow entry point must
+resolve to a `Workflow` instance. Prefix names with the provider name to avoid clashes.
+Consumers can discover plugins without scanning package directories:
+
+```python
+from taskmaestro import registered_tasks, registered_workflows
+
+tasks = registered_tasks()          # dict[str, type[Task]]
+workflows = registered_workflows()  # dict[str, Workflow]
+```
+
+Use `registered_task_names()` and `registered_workflow_names()` to inspect identifiers
+without importing plugin modules, or `get_registered_task(name)` and
+`get_registered_workflow(name)` to load one plugin. Duplicate names and invalid plugin
+types raise `PluginLoadError`.
+
 ## YAML Configuration
 
-Workflows can be defined entirely in YAML instead of Python. The loader dynamically imports task classes and validates the full configuration:
+Workflows can be defined entirely in YAML instead of Python. A `task:` value may be
+either a registered task identifier or a dotted Python class path. The loader resolves
+registered identifiers first and validates the full configuration:
 
 ```yaml
 # workflow.yaml
