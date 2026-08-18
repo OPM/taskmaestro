@@ -39,7 +39,6 @@ from taskmaestro import (
     Runner,
     Task,
     Workflow,
-    workflow_task,
 )
 from taskmaestro.hooks import LoggingHook, TimingHook
 
@@ -266,8 +265,8 @@ inner_workflow = (
     .build()
 )
 
-# Wrap the inner workflow as a single opaque task
-AnalyzeImage = workflow_task(inner_workflow, name="analyze_image")
+# Wrap the inner workflow as a single typed task
+AnalyzeImage = inner_workflow.as_task(name="analyze_image")
 
 
 # ---------------------------------------------------------------------------

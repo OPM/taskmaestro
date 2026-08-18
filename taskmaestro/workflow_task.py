@@ -9,18 +9,21 @@ from taskmaestro.exceptions import WorkflowDefinitionError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
 from taskmaestro.runner import Runner
 from taskmaestro.task import Task, get_input_type, get_output_type
+from taskmaestro.workflow import Workflow
 
 
 def workflow_task(
-    workflow: Any,
+    workflow: Workflow,
     *,
     name: str | None = None,
     job_configuration: JobConfiguration | None = None,
 ) -> type[Task[Any, Any]]:
     """Create a Task subclass that wraps an entire workflow as a single task.
 
-    The generated task's input type is derived from the inner workflow's root task,
-    and its output type from the inner workflow's result task.
+    The generated task's input type is derived from the inner workflow's sole
+    unconfigured root task, and its output type from the inner workflow's result
+    task. Prefer ``workflow.as_task()`` in application code; this function remains
+    available when a factory-style API is more convenient.
 
     Args:
         workflow: The inner Workflow to wrap.
@@ -28,7 +31,9 @@ def workflow_task(
         job_configuration: Optional JobConfiguration for inner tasks with config_fields.
 
     Returns:
-        A new Task subclass that runs the inner workflow.
+        A new Task subclass that runs the inner workflow with the outer task's
+        ``ExecutionContext``. The inner workflow is an opaque lifecycle boundary:
+        hooks on the outer runner observe the generated task, not its inner tasks.
 
     Raises:
         WorkflowDefinitionError: If the inner workflow does not have exactly one

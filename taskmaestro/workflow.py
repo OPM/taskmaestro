@@ -343,6 +343,22 @@ class Workflow:
                     f"({sinks}); specify result_task explicitly"
                 )
 
+    def as_task(
+        self,
+        *,
+        name: str | None = None,
+        job_configuration: JobConfiguration | None = None,
+    ) -> type[Task[Any, Any]]:
+        """Wrap this workflow as a task for composition in another workflow.
+
+        The task input is inferred from the sole unconfigured root task and its
+        output from this workflow's result task. If every root is configured,
+        pass ``job_configuration`` and the generated task accepts ``EmptyConfig``.
+        """
+        from taskmaestro.workflow_task import workflow_task
+
+        return workflow_task(self, name=name, job_configuration=job_configuration)
+
     def to_mermaid(self, *, job_configuration: JobConfiguration | None = None) -> str:
         """Return a Mermaid diagram string for this workflow."""
         from taskmaestro.visualization import to_mermaid
