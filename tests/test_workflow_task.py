@@ -202,6 +202,37 @@ class TestBasicWorkflowTask:
 
 
 # ============================================================
+# TestWorkflowAsTask
+# ============================================================
+
+
+class TestWorkflowAsTask:
+    def test_infers_boundary_types(self) -> None:
+        inner_wf = Workflow("inner", tasks=[InnerAdd, InnerDouble])
+
+        WrappedTask = inner_wf.as_task(name="nested")
+
+        assert WrappedTask.name == "nested"
+        assert get_input_type(WrappedTask) is InnerInput
+        assert get_output_type(WrappedTask) is InnerOutput
+
+    def test_runs_inside_outer_workflow(self) -> None:
+        inner_wf = Workflow("inner", tasks=[InnerAdd, InnerDouble])
+        Nested = inner_wf.as_task()
+        outer_wf = (
+            Workflow.builder("outer")
+            .add_task(Nested)
+            .add_task(DownstreamTask, depends_on=Nested)
+            .build()
+        )
+
+        result = Runner().run(Job(outer_wf, InnerInput(value=4)))
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == StringResult(text="10")
+
+
+# ============================================================
 # TestWorkflowTaskInOuterWorkflow
 # ============================================================
 
