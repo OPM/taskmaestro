@@ -35,3 +35,7 @@ class TaskTimeoutError(TaskExecutionError):
 
 class ConfigLoadError(WorkflowRunnerError):
     """Raised when YAML config loading fails (parse errors, import failures, validation)."""
+
+
+class PluginLoadError(WorkflowRunnerError):
+    """Raised when an installed task or workflow entry point is invalid."""

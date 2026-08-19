@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "taskmaestro"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Python 3.12+ library for defining and executing typed DAG task workflows"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -44,7 +44,7 @@ packages = ["taskmaestro"]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
-    "ruff>=0.4",
+    "ruff>=0.16",
     "mypy>=1.10",
     "types-PyYAML>=6.0",
 ]

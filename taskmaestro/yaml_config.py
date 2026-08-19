@@ -12,7 +12,8 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from taskmaestro.context import ExecutionContext
-from taskmaestro.exceptions import ConfigLoadError
+from taskmaestro.discovery import get_registered_task, registered_task_names
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
 from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.runner import Runner
@@ -195,6 +196,7 @@ def _load_workflow_only(
     # 4. Resolve task import paths (handles both task: and workflow: entries)
     base_dir = workflow_path.parent
     task_classes: dict[str, type[Task[Any, Any]]] = {}
+    installed_task_names = registered_task_names()
     for task_config in config.workflow.tasks:
         if task_config.workflow:
             # Recursive workflow reference
@@ -209,7 +211,13 @@ def _load_workflow_only(
             task_classes[task_config.workflow] = wrapped_cls
         else:
             assert task_config.task is not None
-            cls = import_class(task_config.task)
+            try:
+                if task_config.task in installed_task_names:
+                    cls = get_registered_task(task_config.task)
+                else:
+                    cls = import_class(task_config.task)
+            except PluginLoadError as exc:
+                raise ConfigLoadError(str(exc)) from exc
             if not (isinstance(cls, type) and issubclass(cls, Task)):
                 raise ConfigLoadError(f"'{task_config.task}' is not a Task subclass")
             task_classes[task_config.task] = cls
