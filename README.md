@@ -22,25 +22,30 @@ pip install -e ".[dev]"
 from pydantic import BaseModel
 from taskmaestro import Task, Workflow, Job, Runner, ExecutionContext
 
+
 class NumberInput(BaseModel):
     value: int
 
+
 class NumberOutput(BaseModel):
     value: int
+
 
 class AddOne(Task[NumberInput, NumberOutput]):
     def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
         return NumberOutput(value=input.value + 1)
 
+
 class Double(Task[NumberOutput, NumberOutput]):
     def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
         return NumberOutput(value=input.value * 2)
+
 
 workflow = Workflow(name="math", tasks=[AddOne, Double])
 job = Job(workflow=workflow, config=NumberInput(value=5))
 result = Runner().run(job)
 
-print(result.status)        # "completed"
+print(result.status)  # "completed"
 print(result.result.value)  # 12
 ```
 
@@ -50,30 +55,38 @@ print(result.result.value)  # 12
 from pydantic import BaseModel
 from taskmaestro import Task, Workflow, Job, Runner, ExecutionContext
 
+
 class Input(BaseModel):
     value: int
 
+
 class Output(BaseModel):
     value: int
+
 
 class MergedInput(BaseModel):
     a: Output
     b: Output
 
+
 class MergedOutput(BaseModel):
     total: int
+
 
 class BranchA(Task[Input, Output]):
     def run(self, input: Input, ctx: ExecutionContext) -> Output:
         return Output(value=input.value + 1)
 
+
 class BranchB(Task[Input, Output]):
     def run(self, input: Input, ctx: ExecutionContext) -> Output:
         return Output(value=input.value * 2)
 
+
 class Merge(Task[MergedInput, MergedOutput]):
     def run(self, input: MergedInput, ctx: ExecutionContext) -> MergedOutput:
         return MergedOutput(total=input.a.value + input.b.value)
+
 
 workflow = (
     Workflow.builder(name="fan_in")
@@ -86,7 +99,7 @@ workflow = (
 job = Job(workflow=workflow, config=Input(value=5))
 result = Runner().run(job)
 
-print(result.status)        # "completed"
+print(result.status)  # "completed"
 print(result.result.total)  # 16 (6 + 10)
 ```
 
@@ -131,15 +144,17 @@ from taskmaestro import EmptyConfig, Job, JobConfiguration, Workflow
 
 workflow = (
     Workflow.builder(name="configured")
-    .add_task(LoadModel, config_fields=["path"])          # root: all input from config
+    .add_task(LoadModel, config_fields=["path"])  # root: all input from config
     .add_task(Transform, depends_on=LoadModel, config_fields=["scale_factor"])  # mixed
     .build()
 )
 
-job_config = JobConfiguration({
-    "load_model": {"path": "/data/model.egrid"},
-    "transform": {"scale_factor": 2.5},
-})
+job_config = JobConfiguration(
+    {
+        "load_model": {"path": "/data/model.egrid"},
+        "transform": {"scale_factor": 2.5},
+    }
+)
 
 job = Job(workflow=workflow, config=EmptyConfig(), job_configuration=job_config)
 result = Runner().run(job)
@@ -160,15 +175,19 @@ class ExtractKeywords(Task):
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs: ...
 
+
 workflow = (
     Workflow.builder(name="analysis")
     .add_task(ExtractKeywords, depends_on=PrepareText)
     .add_task(
         BuildReport,
         depends_on={
-            "keywords": (ExtractKeywords, "keywords"),              # routes .keywords field
-            "num_words_removed": (ExtractKeywords, "num_words_removed"),  # routes .num_words_removed
-            "stats": ComputeWordStats,                              # whole output
+            "keywords": (ExtractKeywords, "keywords"),  # routes .keywords field
+            "num_words_removed": (
+                ExtractKeywords,
+                "num_words_removed",
+            ),  # routes .num_words_removed
+            "stats": ComputeWordStats,  # whole output
         },
     )
     .build()
@@ -186,10 +205,12 @@ from taskmaestro import ObjectModel
 GridCase = ObjectModel[rips.EclipseCase]
 WellPath = ObjectModel[rips.WellPath]
 
+
 # Subclass — adds fields alongside the wrapped object
 class AddPerforationInput(ObjectModel[rips.WellPath]):
     start_md: float
     end_md: float
+
 
 # Access the wrapped object via .value
 grid = GridCase(value=eclipse_case)
@@ -215,7 +236,7 @@ Consumers can discover plugins without scanning package directories:
 ```python
 from taskmaestro import registered_tasks, registered_workflows
 
-tasks = registered_tasks()          # dict[str, type[Task]]
+tasks = registered_tasks()  # dict[str, type[Task]]
 workflows = registered_workflows()  # dict[str, Workflow]
 ```
 
