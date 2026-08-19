@@ -12,6 +12,7 @@ from taskmaestro.workflow import Workflow
 TASK_ENTRY_POINT_GROUP = "taskmaestro.tasks"
 WORKFLOW_ENTRY_POINT_GROUP = "taskmaestro.workflows"
 
+
 def _entry_points_by_name(group: str) -> dict[str, EntryPoint]:
     """Return entry points in *group*, rejecting ambiguous registrations."""
     result: dict[str, EntryPoint] = {}
@@ -29,8 +30,7 @@ def _load[T](entry_point: EntryPoint, expected_type: type[T], kind: str) -> T:
         value: Any = entry_point.load()
     except Exception as exc:
         raise PluginLoadError(
-            f"Cannot load {kind} entry point '{entry_point.name}' "
-            f"({entry_point.value}): {exc}"
+            f"Cannot load {kind} entry point '{entry_point.name}' ({entry_point.value}): {exc}"
         ) from exc
     if not isinstance(value, expected_type):
         raise PluginLoadError(

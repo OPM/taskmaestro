@@ -74,15 +74,10 @@ def test_discovers_registered_plugins(plugin_entry_points: None) -> None:
     assert get_registered_workflow("example.workflow") is example_workflow
 
 
-def test_registered_task_can_be_used_in_yaml(
-    plugin_entry_points: None, tmp_path: Path
-) -> None:
+def test_registered_task_can_be_used_in_yaml(plugin_entry_points: None, tmp_path: Path) -> None:
     workflow_path = tmp_path / "workflow.yaml"
     workflow_path.write_text(
-        "workflow:\n"
-        "  name: entry_point_workflow\n"
-        "  tasks:\n"
-        "    - task: example.increment\n"
+        "workflow:\n  name: entry_point_workflow\n  tasks:\n    - task: example.increment\n"
     )
     input_path = tmp_path / "input.yaml"
     input_path.write_text("value: 4\n")

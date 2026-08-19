@@ -114,8 +114,12 @@ class AddPerforationInput(BaseModel):
 
     resinsight: RipsInstance
     well_path: WellPath
-    event_date: str = Field(description="Perforation event date in ISO format (YYYY-MM-DD)", examples=["2024-01-15"])
-    start_md: float = Field(description="Start measured depth of the perforation interval (m)", ge=0)
+    event_date: str = Field(
+        description="Perforation event date in ISO format (YYYY-MM-DD)", examples=["2024-01-15"]
+    )
+    start_md: float = Field(
+        description="Start measured depth of the perforation interval (m)", ge=0
+    )
     end_md: float = Field(description="End measured depth of the perforation interval (m)", ge=0)
 
 
@@ -221,14 +225,19 @@ class ExportCompletions(Task):  # type: ignore[type-arg]
         grid_case: GridCase
         perforation_1: PerforationOutput
         perforation_2: PerforationOutput
-        event_date: str = Field(description="Timestamp written into the exported schedule file", examples=["2024-05-01"])
+        event_date: str = Field(
+            description="Timestamp written into the exported schedule file",
+            examples=["2024-05-01"],
+        )
         export_path: str = Field(description="Output path for the .sch completions file")
 
     class Outputs(BaseModel):
         """Exported completions summary."""
 
         export_file: str = Field(description="Path to the generated completions file")
-        well_path_names: list[str] = Field(description="Names of the well paths included in the export")
+        well_path_names: list[str] = Field(
+            description="Names of the well paths included in the export"
+        )
 
     def run(self, input: Inputs, ctx: ExecutionContext) -> Outputs:
         eclipse_case = input.grid_case.value
