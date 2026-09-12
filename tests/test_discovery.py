@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from taskmaestro import (
+    ConfigLoadError,
     ExecutionContext,
     PluginLoadError,
     Task,
@@ -104,3 +105,44 @@ def test_rejects_duplicate_names(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(PluginLoadError, match="Multiple entry points"):
         registered_tasks()
+
+
+def test_reports_entry_point_load_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = _entry_point("broken", "tests.test_discovery:missing", "taskmaestro.tasks")
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [entry])
+
+    with pytest.raises(PluginLoadError, match="Cannot load task entry point 'broken'") as exc_info:
+        registered_tasks()
+
+    assert isinstance(exc_info.value.__cause__, AttributeError)
+
+
+def test_rejects_wrong_workflow_plugin_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = _entry_point("invalid", "tests.test_discovery:ExampleTask", "taskmaestro.workflows")
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [entry])
+
+    with pytest.raises(PluginLoadError, match="must resolve to a Workflow"):
+        registered_workflows()
+
+
+def test_reports_missing_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [])
+
+    with pytest.raises(PluginLoadError, match="No task entry point named 'missing'"):
+        get_registered_task("missing")
+    with pytest.raises(PluginLoadError, match="No workflow entry point named 'missing'"):
+        get_registered_workflow("missing")
+
+
+def test_yaml_wraps_invalid_task_plugin_error(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    entry = _entry_point("invalid", "tests.test_discovery:Input", "taskmaestro.tasks")
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [entry])
+    workflow_path = tmp_path / "workflow.yaml"
+    workflow_path.write_text("workflow:\n  name: invalid\n  tasks:\n    - task: invalid\n")
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text("{}\n")
+
+    with pytest.raises(ConfigLoadError, match="must resolve to a Task subclass"):
+        load_workflow_from_yaml(workflow_path, input_path)
