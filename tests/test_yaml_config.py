@@ -1260,6 +1260,176 @@ class PerTaskDownstream(Task[DownstreamInput, DownstreamOutput]):
         return DownstreamOutput(result=f"{input.label}:{input.path}:{input.flag}")
 
 
+class AmbiguousPayload(BaseModel):
+    a: int
+
+
+class AmbiguousInput(BaseModel):
+    """Root input whose sole field shares its name with the task below."""
+
+    payload: AmbiguousPayload
+
+
+class AmbiguousRoot(Task[AmbiguousInput, TextOutput]):
+    name = "payload"
+
+    def run(self, input: AmbiguousInput, ctx: ExecutionContext) -> TextOutput:
+        return TextOutput(text=str(input.payload.a))
+
+
+class TestInputMode:
+    """workflow.input_mode controls flat vs per-task interpretation of input.yaml."""
+
+    def _ambiguous_workflow(self, tmp_path: Path, input_mode: str | None) -> Path:
+        mode_line = f"  input_mode: {input_mode}\n" if input_mode else ""
+        return _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: ambiguous
+{mode_line}  tasks:
+    - task: {THIS_MODULE}.AmbiguousRoot
+""",
+        )
+
+    def test_auto_refuses_to_guess_when_both_readings_valid(self, tmp_path: Path) -> None:
+        """A flat input whose only key equals a task name is rejected under auto."""
+        wf_path = self._ambiguous_workflow(tmp_path, None)
+        in_path = _write_input_yaml(tmp_path, "payload:\n  a: 1\n")
+        with pytest.raises(
+            ConfigLoadError,
+            match=(
+                r"Input file is ambiguous: its top-level keys \['payload'\] are task names, "
+                r"but the mapping is also a valid AmbiguousInput for root task 'payload'\. "
+                r"Set workflow\.input_mode to 'flat' or 'per_task'\."
+            ),
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_flat_forces_root_input_reading(self, tmp_path: Path) -> None:
+        wf_path = self._ambiguous_workflow(tmp_path, "flat")
+        in_path = _write_input_yaml(tmp_path, "payload:\n  a: 7\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.job.job_configuration is None
+        assert isinstance(loaded.job.config, AmbiguousInput)
+        assert loaded.run().result.text == "7"  # type: ignore[union-attr]
+
+    def test_per_task_forces_config_reading(self, tmp_path: Path) -> None:
+        wf_path = self._ambiguous_workflow(tmp_path, "per_task")
+        in_path = _write_input_yaml(tmp_path, "payload:\n  payload:\n    a: 3\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.job.job_configuration is not None
+        assert loaded.workflow.get_config_fields("payload") == {"payload"}
+        assert loaded.run().result.text == "3"  # type: ignore[union-attr]
+
+    def test_auto_still_picks_per_task_when_flat_reading_is_invalid(self, tmp_path: Path) -> None:
+        """The heuristic is kept for the unambiguous common case."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: per_task_ok
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, 'per_task_root:\n  egrid_path: "/x"\n')
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.job.job_configuration is not None
+
+    def test_per_task_rejects_unknown_task_key(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: strict
+  input_mode: per_task
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, 'per_task_rooot:\n  egrid_path: "/x"\n')
+        with pytest.raises(
+            ConfigLoadError,
+            match=(
+                r"input_mode is 'per_task' but top-level key 'per_task_rooot' is not a task "
+                r"name \(known tasks: \['per_task_root'\]\)"
+            ),
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_per_task_rejects_non_mapping_value(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: strict
+  input_mode: per_task
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "per_task_root: 42\n")
+        with pytest.raises(
+            ConfigLoadError,
+            match=r"value for task 'per_task_root' is not a mapping \(got int\)",
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_per_task_allows_null_value(self, tmp_path: Path) -> None:
+        """``task_name:`` with no value means 'configured, no fields'."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: strict
+  input_mode: per_task
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "per_task_root:\n")
+        # Accepted mode-wise; the task then has no config_fields and no job
+        # input, which surfaces as a wrapped Job validation error.
+        with pytest.raises(
+            ConfigLoadError,
+            match=r"Job validation failed: Root task 'per_task_root' expects input type",
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_auto_with_dag_root_is_ambiguity_checked(self, tmp_path: Path) -> None:
+        """In DAG mode the root is the entry without depends_on, not entry 0."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: dag_ambiguous
+  tasks:
+    - task: {THIS_MODULE}.TextLength
+      depends_on: payload
+    - task: {THIS_MODULE}.AmbiguousRoot
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "payload:\n  a: 1\n")
+        with pytest.raises(ConfigLoadError, match="Input file is ambiguous"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_invalid_input_mode_is_schema_error(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad
+  input_mode: sideways
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hi\n")
+        with pytest.raises(ConfigLoadError, match="YAML schema validation error"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+
 class TestPerTaskConfig:
     """Tests for per-task YAML config format."""
 

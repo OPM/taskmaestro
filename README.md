@@ -500,6 +500,16 @@ result = run_workflow_from_yaml("workflow.yaml", "input.yaml")
 
 YAML supports named task instances (`name:`), per-task input config (keyed by task name in the input file), fan-in dicts, and output field routing via `[task, field]` lists.
 
+How `input.yaml` is read is controlled by `workflow.input_mode`:
+
+| `input_mode` | Meaning |
+|---|---|
+| `auto` (default) | Per-task if every top-level key is a task name whose value is a mapping (or null); otherwise flat. If the file is *also* a valid input for the root task, loading fails and asks you to pick explicitly. |
+| `flat` | The whole mapping is the root task's input model. |
+| `per_task` | Top-level keys must be task names; unknown keys or non-mapping values are errors. |
+
+When the same task class (or the same inner YAML file) appears more than once under different `name:`s, `depends_on` and `result_task` must use the instance name — referencing the class path is rejected as ambiguous.
+
 Use `workflow:` instead of `task:` to compose another YAML workflow. Paths are resolved
 relative to the containing workflow file, and `workflow_input:` optionally supplies the
 inner workflow's per-task configuration:
