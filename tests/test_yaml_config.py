@@ -1213,12 +1213,237 @@ per_task_root:
 # ============================================================
 
 
+class TestLinearModeViaBuilder:
+    """Linear-mode YAML (no depends_on) must honour the same rules as DAG mode."""
+
+    def test_name_override_is_honoured(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+      name: shout
+    - task: {THIS_MODULE}.ReverseText
+      name: flip
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+
+        assert list(loaded.workflow._tasks) == ["shout", "flip"]
+        assert loaded.workflow.get_dependencies("flip") == "shout"
+        assert loaded.workflow.result_task_name == "flip"
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert [r.task_name for r in result.task_results] == ["shout", "flip"]
+
+    def test_per_task_config_with_name_override(self, tmp_path: Path) -> None:
+        """Per-task input keyed by the overridden name is wired to the right task."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+      name: my_root
+""",
+        )
+        in_path = _write_input_yaml(
+            tmp_path,
+            """\
+my_root:
+  egrid_path: "/data/x.egrid"
+""",
+        )
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.workflow.get_config_fields("my_root") == {"egrid_path"}
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.path == "/data/x.egrid"  # type: ignore[union-attr]
+
+    def test_unknown_config_field_is_rejected_at_load(self, tmp_path: Path) -> None:
+        """Config fields are validated (previously bypassed in linear mode)."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.PerTaskRoot
+""",
+        )
+        in_path = _write_input_yaml(
+            tmp_path,
+            """\
+per_task_root:
+  egrid_path: "/data/x.egrid"
+  bogus: 1
+""",
+        )
+        with pytest.raises(ConfigLoadError, match="Config field 'bogus' not found"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_type_mismatch_is_wrapped(self, tmp_path: Path) -> None:
+        """A linear chain with incompatible types raises ConfigLoadError, not a raw error."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match=r"Workflow validation failed.*Type mismatch"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_duplicate_names_are_wrapped(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="Duplicate task name 'upper_text'"):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_result_task_by_instance_name(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  result_task: shout
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+      name: shout
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.workflow.result_task_name == "shout"
+
+    def test_job_validation_error_is_wrapped(self, tmp_path: Path) -> None:
+        """Errors raised while constructing the Job surface as ConfigLoadError."""
+        from unittest.mock import patch
+
+        from taskmaestro.exceptions import WorkflowDefinitionError
+
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: lin
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with (
+            patch(
+                "taskmaestro.yaml_config.Job.__init__",
+                side_effect=WorkflowDefinitionError("boom"),
+            ),
+            pytest.raises(ConfigLoadError, match="Job validation failed: boom"),
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+
 class TestWorkflowTaskYaml:
     """Tests for YAML workflow: references (workflow_task via YAML)."""
 
     def _write_yaml(self, path: Path, content: str) -> Path:
         path.write_text(content)
         return path
+
+    def test_self_referencing_workflow_is_rejected(self, tmp_path: Path) -> None:
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            """\
+workflow:
+  name: loop
+  tasks:
+    - workflow: outer.yaml
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="Recursive workflow reference"):
+            load_workflow_from_yaml(outer_path, in_path)
+
+    def test_mutually_referencing_workflows_are_rejected(self, tmp_path: Path) -> None:
+        self._write_yaml(
+            tmp_path / "a.yaml",
+            """\
+workflow:
+  name: a
+  tasks:
+    - workflow: b.yaml
+""",
+        )
+        self._write_yaml(
+            tmp_path / "b.yaml",
+            f"""\
+workflow:
+  name: b
+  tasks:
+    - workflow: ../{tmp_path.name}/a.yaml
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        with pytest.raises(ConfigLoadError, match="Recursive workflow reference") as excinfo:
+            load_workflow_from_yaml(tmp_path / "a.yaml", in_path)
+        # Both files appear in the reported chain.
+        assert "a.yaml" in str(excinfo.value)
+        assert "b.yaml" in str(excinfo.value)
+
+    def test_reuse_of_inner_workflow_is_not_a_cycle(self, tmp_path: Path) -> None:
+        """Only files on the *current* nesting chain count as recursion."""
+        self._write_yaml(
+            tmp_path / "leaf.yaml",
+            f"""\
+workflow:
+  name: leaf
+  tasks:
+    - task: {THIS_MODULE}.ReverseText
+""",
+        )
+        self._write_yaml(
+            tmp_path / "mid.yaml",
+            """\
+workflow:
+  name: mid
+  tasks:
+    - workflow: leaf.yaml
+      name: inner_leaf
+""",
+        )
+        outer_path = self._write_yaml(
+            tmp_path / "outer.yaml",
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - workflow: mid.yaml
+      name: via_mid
+      depends_on: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "text: hello\n")
+        loaded = load_workflow_from_yaml(outer_path, in_path)
+        assert loaded.run().status == JobStatus.COMPLETED
 
     def test_workflow_ref_basic(self, tmp_path: Path) -> None:
         """Outer YAML references inner YAML via workflow:, end-to-end."""

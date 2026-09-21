@@ -49,6 +49,11 @@ class TestLinearWorkflow:
         assert wf.result_task is AddOne
         assert wf.topological_order() == [("add_one", AddOne)]
 
+    def test_explicit_result_task_overrides_last(self) -> None:
+        wf = Workflow(name="test", tasks=[AddOne, Double], result_task=AddOne)
+        assert wf.result_task is AddOne
+        assert wf.result_task_name == "add_one"
+
     def test_empty_workflow(self) -> None:
         wf = Workflow(name="empty")
         assert wf._tasks == {}
