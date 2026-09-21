@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, Literal
 
 import pytest
 from pydantic import BaseModel
@@ -20,7 +21,7 @@ from taskmaestro import (
     collect,
     load_workflow_from_yaml,
 )
-from taskmaestro.workflow import _is_type_compatible
+from taskmaestro.workflow import _is_type_compatible, _type_name
 from tests.conftest import NumberInput
 
 
@@ -84,6 +85,39 @@ class CollectSurfaceDict(Task[SurfaceDictInput, SurfaceNames]):
 
 class TextOutput(BaseModel):
     text: str
+
+
+class GenericSurfaceOutput(BaseModel):
+    surfaces: dict[str, RegularSurface]
+
+
+class BadGenericSurfaceOutput(BaseModel):
+    surfaces: dict[int, RegularSurface]
+
+
+class GenericSurfaceInput(BaseModel):
+    surfaces: dict[str, Surface | None]
+
+
+class ProduceGenericSurfaces(Task[NumberInput, GenericSurfaceOutput]):
+    name = "produce_generic_surfaces"
+
+    def run(self, input: NumberInput, ctx: ExecutionContext) -> GenericSurfaceOutput:
+        return GenericSurfaceOutput(surfaces={})
+
+
+class ProduceBadGenericSurfaces(Task[NumberInput, BadGenericSurfaceOutput]):
+    name = "produce_bad_generic_surfaces"
+
+    def run(self, input: NumberInput, ctx: ExecutionContext) -> BadGenericSurfaceOutput:
+        return BadGenericSurfaceOutput(surfaces={})
+
+
+class ConsumeGenericSurfaces(Task[GenericSurfaceInput, SurfaceNames]):
+    name = "consume_generic_surfaces"
+
+    def run(self, input: GenericSurfaceInput, ctx: ExecutionContext) -> SurfaceNames:
+        return SurfaceNames(names=[])
 
 
 class ProduceText(Task[NumberInput, TextOutput]):
@@ -264,7 +298,69 @@ class TestCollectionWorkflow:
 
     def test_type_compatibility_handles_unions_and_parameterized_types(self) -> None:
         assert _is_type_compatible(RegularSurface, Surface | TextOutput)
+        assert _is_type_compatible(dict[str, RegularSurface], dict[str, Surface])
+        assert _is_type_compatible(list[RegularSurface], list[Surface | None])
+        assert _is_type_compatible(
+            dict[str, list[RegularSurface]],
+            dict[str, list[Surface | None]],
+        )
+        assert _is_type_compatible(RegularSurface | TextOutput, Surface | TextOutput)
         assert not _is_type_compatible(list[int], list[str])
+        assert not _is_type_compatible(dict[int, RegularSurface], dict[str, Surface])
+        assert not _is_type_compatible(RegularSurface | int, Surface)
+
+    def test_type_compatibility_handles_generic_edge_cases(self) -> None:
+        assert _is_type_compatible(list[RegularSurface], list)
+        assert not _is_type_compatible(list, list[Surface])
+        assert not _is_type_compatible(list[int], dict[int, int])
+        assert not _is_type_compatible(Literal["produced"], Literal["expected"])
+        assert not _is_type_compatible("Produced", "Expected")
+        assert not _is_type_compatible(tuple[int, str], tuple[int])
+
+    def test_type_compatibility_handles_variadic_tuples(self) -> None:
+        assert _is_type_compatible(tuple[RegularSurface, ...], tuple[Surface, ...])
+        assert _is_type_compatible(
+            tuple[RegularSurface, TextOutput],
+            tuple[Surface | TextOutput, ...],
+        )
+        assert not _is_type_compatible(tuple[RegularSurface, int], tuple[Surface, ...])
+
+    def test_type_name_handles_special_annotations(self) -> None:
+        assert _type_name(Any) == "Any"
+        assert _type_name(None) == "None"
+        assert _type_name(type(None)) == "None"
+        assert _type_name(Ellipsis) == "..."
+
+    def test_parameterized_fan_in_types_are_compared_recursively(self) -> None:
+        workflow = (
+            Workflow.builder("generic_fan_in")
+            .add_task(ProduceGenericSurfaces)
+            .add_task(
+                ConsumeGenericSurfaces,
+                depends_on={"surfaces": (ProduceGenericSurfaces, "surfaces")},
+            )
+            .build()
+        )
+
+        assert workflow.result_task is ConsumeGenericSurfaces
+
+    def test_parameterized_fan_in_error_shows_complete_annotations(self) -> None:
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=(
+                r"outputs dict\[int, RegularSurface\].*"
+                r"expects dict\[str, Surface \| None\]"
+            ),
+        ):
+            (
+                Workflow.builder("bad_generic_fan_in")
+                .add_task(ProduceBadGenericSurfaces)
+                .add_task(
+                    ConsumeGenericSurfaces,
+                    depends_on={"surfaces": (ProduceBadGenericSurfaces, "surfaces")},
+                )
+                .build()
+            )
 
     def test_collection_and_config_cannot_supply_same_field(self) -> None:
         with pytest.raises(WorkflowDefinitionError, match="supplied by both"):
