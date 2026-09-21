@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
 from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
 from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.mapping import TaskMap
@@ -172,6 +172,13 @@ def _coerce_hook_params(hook_cls: type[Any], params: dict[str, Any]) -> dict[str
 
 
 @dataclass(frozen=True)
+class _LinearDep:
+    """An already-registered upstream name produced by linear-mode chaining."""
+
+    upstream: str
+
+
+@dataclass(frozen=True)
 class LoadedWorkflow:
     """A fully resolved workflow ready to execute."""
 
@@ -201,15 +208,26 @@ class LoadedWorkflow:
 def _load_workflow_only(
     workflow_path: Path,
     input_path: Path | None = None,
+    *,
+    _ancestors: frozenset[Path] = frozenset(),
 ) -> tuple[Workflow, JobConfiguration | None]:
     """Build a Workflow and optional JobConfiguration from YAML files.
 
     This is the core logic shared by ``load_workflow_from_yaml`` and
-    recursive ``workflow:`` references in YAML configs.
+    recursive ``workflow:`` references in YAML configs.  ``_ancestors`` holds
+    the resolved paths of every enclosing workflow file so that a self- or
+    mutually-referencing ``workflow:`` entry is rejected instead of recursing
+    without bound.
 
     Returns (workflow, job_configuration).
     """
     from taskmaestro.workflow_task import workflow_task as _workflow_task
+
+    resolved_path = workflow_path.resolve()
+    if resolved_path in _ancestors:
+        chain = " -> ".join(str(p) for p in (*sorted(_ancestors), resolved_path))
+        raise ConfigLoadError(f"Recursive workflow reference: {chain}")
+    ancestors = _ancestors | {resolved_path}
 
     # 1. Parse workflow YAML
     try:
@@ -252,7 +270,9 @@ def _load_workflow_only(
             inner_input_path = (
                 base_dir / task_config.workflow_input if task_config.workflow_input else None
             )
-            inner_wf, inner_jc = _load_workflow_only(inner_wf_path, inner_input_path)
+            inner_wf, inner_jc = _load_workflow_only(
+                inner_wf_path, inner_input_path, _ancestors=ancestors
+            )
             inner_name = task_config.name if task_config.name else inner_wf.name
             wrapped_cls = _workflow_task(inner_wf, name=inner_name, job_configuration=inner_jc)
             # Use a synthetic key for this entry (the workflow path)
@@ -365,42 +385,40 @@ def _load_workflow_only(
         else:
             raise ConfigLoadError(f"result_task '{config.workflow.result_task}' not found")
 
-    # 8. Build Workflow
-    if not has_depends_on:
-        task_list = [task_classes[_task_key(tc)] for tc in config.workflow.tasks]
-        result_task_cls = (
-            task_classes[config.workflow.result_task] if config.workflow.result_task else None
+    # 8. Build Workflow. Both linear and DAG configs go through the builder so
+    #    that ``name:`` overrides, config_fields and validation behave the same.
+    #    In linear mode each task depends on the whole output of the previous one.
+    builder = WorkflowBuilder(config.workflow.name, result_task=result_task_name)
+    previous_registered: str | None = None
+    for task_config in config.workflow.tasks:
+        key = _task_key(task_config)
+        cls = task_classes[key]
+        registered_name = name_lookup[key] if not task_config.name else task_config.name
+        instance_name = task_config.name
+        cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
+        mapped_over = (
+            TaskMap(**task_config.map.model_dump()) if task_config.map is not None else None
         )
-        workflow = Workflow(
-            name=config.workflow.name,
-            tasks=task_list,
-            result_task=result_task_cls,
-        )
-        for task_config in config.workflow.tasks:
-            key = _task_key(task_config)
-            registered_name = task_config.name if task_config.name else task_classes[key].name
-            cfg = task_config.config_fields or per_task_cfg_fields.get(registered_name)
-            if cfg:
-                workflow._config_fields[registered_name] = set(cfg)
-    else:
-        builder = WorkflowBuilder(
-            config.workflow.name,
-            result_task=result_task_name,
-        )
-        for task_config in config.workflow.tasks:
-            key = _task_key(task_config)
-            cls = task_classes[key]
-            deps = task_config.depends_on
-            registered_name = name_lookup[key]
-            instance_name = task_config.name
-            cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
-            mapped_over = (
-                TaskMap(**task_config.map.model_dump()) if task_config.map is not None else None
-            )
+        deps: str | list[str] | dict[str, Any] | _LinearDep | None = task_config.depends_on
+        if not has_depends_on and previous_registered is not None:
+            # Linear mode: chain on the previous task's registered name, which
+            # the builder accepts verbatim as a string dependency.
+            deps = _LinearDep(previous_registered)
+        previous_registered = registered_name
+
+        try:
             if deps is None:
                 builder.add_task(
                     cls,
                     name=instance_name,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
+                )
+            elif isinstance(deps, _LinearDep):
+                builder.add_task(
+                    cls,
+                    name=instance_name,
+                    depends_on=deps.upstream,
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
                 )
@@ -466,10 +484,12 @@ def _load_workflow_only(
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
                 )
-        try:
-            workflow = builder.build()
-        except Exception as exc:
+        except WorkflowDefinitionError as exc:
             raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
+    try:
+        workflow = builder.build()
+    except Exception as exc:
+        raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
 
     # 9. Build JobConfiguration if per-task config detected
     job_configuration: JobConfiguration | None = None
@@ -523,33 +543,36 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 5. Validate input and build Job
     job: Job[Any]
-    if job_configuration is not None:
-        job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
-    else:
-        # Flat config mode: find root tasks from the built workflow
-        root_task_classes = [
-            workflow._tasks[task_name]
-            for task_name, deps in workflow._dependencies.items()
-            if deps is None and not workflow.get_config_fields(task_name)
-        ]
-        if not root_task_classes and all(
-            deps is not None for deps in workflow._dependencies.values()
-        ):
-            # The workflow is self-contained, for example a task fed only by
-            # explicitly empty collection dependencies.
-            job = Job(workflow, EmptyConfig())
-        elif not root_task_classes:
-            raise ConfigLoadError(
-                "Workflow has configured root tasks but no per-task input configuration"
-            )
+    try:
+        if job_configuration is not None:
+            job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
         else:
-            input_type = get_input_type(root_task_classes[0])
-            try:
-                validated_input = input_type.model_validate(raw_input)
-            except ValidationError as exc:
-                raise ConfigLoadError(f"Input validation error: {exc}") from exc
+            # Flat config mode: find root tasks from the built workflow
+            root_task_classes = [
+                workflow._tasks[task_name]
+                for task_name, deps in workflow._dependencies.items()
+                if deps is None and not workflow.get_config_fields(task_name)
+            ]
+            if not root_task_classes and all(
+                deps is not None for deps in workflow._dependencies.values()
+            ):
+                # The workflow is self-contained, for example a task fed only by
+                # explicitly empty collection dependencies.
+                job = Job(workflow, EmptyConfig())
+            elif not root_task_classes:
+                raise ConfigLoadError(
+                    "Workflow has configured root tasks but no per-task input configuration"
+                )
+            else:
+                input_type = get_input_type(root_task_classes[0])
+                try:
+                    validated_input = input_type.model_validate(raw_input)
+                except ValidationError as exc:
+                    raise ConfigLoadError(f"Input validation error: {exc}") from exc
 
-            job = Job(workflow, validated_input)
+                job = Job(workflow, validated_input)
+    except WorkflowDefinitionError as exc:
+        raise ConfigLoadError(f"Job validation failed: {exc}") from exc
 
     # 6. Instantiate hooks
     hooks: list[BaseHook] = []
