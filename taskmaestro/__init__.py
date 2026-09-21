@@ -26,11 +26,12 @@ from taskmaestro.exceptions import (
     TaskTimeoutError,
     WorkflowDefinitionError,
     WorkflowRunnerError,
+    WorkflowTaskError,
 )
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
 from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.object_model import ObjectModel
-from taskmaestro.runner import Runner
+from taskmaestro.runner import HookError, Runner
 from taskmaestro.task import Task
 from taskmaestro.visualization import to_mermaid
 from taskmaestro.workflow import Workflow, WorkflowBuilder
@@ -48,6 +49,7 @@ __all__ = [
     "CycleDetectedError",
     "EmptyConfig",
     "ExecutionContext",
+    "HookError",
     "IncompleteInputError",
     "Job",
     "JobConfiguration",
@@ -70,6 +72,7 @@ __all__ = [
     "WorkflowBuilder",
     "WorkflowDefinitionError",
     "WorkflowRunnerError",
+    "WorkflowTaskError",
     "collect",
     "get_registered_task",
     "get_registered_workflow",

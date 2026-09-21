@@ -35,6 +35,7 @@ class TestJobCreation:
         job = Job(workflow=wf, config=NumberInput(value=1))
         assert job.result is None
         assert job.error is None
+        assert job.exception is None
         assert job.failed_task is None
         assert job.started_at is None
         assert job.completed_at is None

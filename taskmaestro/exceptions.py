@@ -1,5 +1,7 @@
 """Exception hierarchy for the workflow runner library."""
 
+from typing import Any
+
 
 class WorkflowRunnerError(Exception):
     """Base exception for all workflow runner errors."""
@@ -41,6 +43,24 @@ class TaskOutputTypeError(TaskExecutionError):
 
 class TaskTimeoutError(TaskExecutionError):
     """Raised when a task exceeds its timeout_seconds."""
+
+
+class WorkflowTaskError(TaskExecutionError):
+    """An inner workflow wrapped by ``workflow_task`` failed.
+
+    Carries the completed inner :class:`~taskmaestro.job.Job` so callers can
+    inspect ``inner_job.task_results``, ``inner_job.failed_task`` and the
+    per-item results of mapped tasks.  The original exception raised by the
+    failing inner task is attached as ``__cause__`` when it is available.
+    """
+
+    def __init__(self, workflow_name: str, inner_job: Any) -> None:
+        self.workflow_name = workflow_name
+        self.inner_job = inner_job
+        super().__init__(
+            f"Inner workflow '{workflow_name}' failed at task "
+            f"'{inner_job.failed_task}': {inner_job.error}"
+        )
 
 
 class ConfigLoadError(WorkflowRunnerError):

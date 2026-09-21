@@ -93,6 +93,7 @@ class Job(Generic[C]):
         self.status: JobStatus = JobStatus.PENDING
         self.result: BaseModel | None = None
         self.error: str | None = None
+        self.exception: Exception | None = None
         self.failed_task: str | None = None
         self.started_at: datetime | None = None
         self.completed_at: datetime | None = None

@@ -31,6 +31,15 @@ class _JobTimeoutError(TaskTimeoutError):
     """A job deadline must abort even when mapped items collect failures."""
 
 
+class HookError(UserWarning):
+    """Warning category used when a lifecycle hook raises.
+
+    Subclasses :class:`UserWarning` so existing ``pytest.warns(UserWarning)``
+    and ``-W error::UserWarning`` configurations keep working, while allowing
+    callers to filter hook failures specifically.
+    """
+
+
 @dataclass
 class _Deadline:
     """Per-run timer state shared by the job and its tasks.
@@ -211,6 +220,7 @@ class Runner:
                     duration = (datetime.now() - task_started).total_seconds()
                     job.status = JobStatus.FAILED
                     job.error = str(exc)
+                    job.exception = exc
                     job.failed_task = task.name
                     job.completed_at = datetime.now()
                     job.task_results.append(
@@ -446,14 +456,21 @@ class Runner:
         deadline.handler_installed = False
 
     def _emit(self, event: Event, *args: object) -> None:
-        """Dispatch event to all hooks, swallowing any hook errors."""
+        """Dispatch event to all hooks, swallowing any hook errors.
+
+        A failing hook must not abort the workflow, but its error should not
+        vanish either: the warning carries the exception and the original
+        traceback is attached via ``source`` for ``-W error`` / logging capture.
+        """
         for hook in self.hooks:
             handler = getattr(hook, f"on_{event}", None)
             if handler is not None:
                 try:
                     handler(*args)
-                except Exception:
+                except Exception as exc:
                     warnings.warn(
-                        f"Hook {type(hook).__name__} raised during {event}",
+                        f"Hook {type(hook).__name__} raised during {event}: {exc!r}",
+                        HookError,
                         stacklevel=2,
+                        source=exc,
                     )

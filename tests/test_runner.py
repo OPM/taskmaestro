@@ -83,6 +83,9 @@ class TestFailurePaths:
         assert result.failed_task == "failing_task"
         assert result.error is not None
         assert "intentionally" in result.error
+        # The original exception object is retained alongside its string form.
+        assert isinstance(result.exception, ValueError)
+        assert str(result.exception) == result.error
 
     def test_output_type_mismatch(self, ctx: ExecutionContext) -> None:
         wf = Workflow(name="test", tasks=[WrongOutputTask])
