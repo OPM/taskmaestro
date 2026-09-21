@@ -110,7 +110,7 @@ You define **Tasks** (typed units of work), compose them into a **Workflow** (li
 | Concept | Description |
 |---|---|
 | **Task** | Subclass `Task[I, O]` with Pydantic models for input and output, then implement `run(input, ctx)`. Each task can declare an optional `timeout_seconds`. For tasks with multiple named outputs, use inline `Inputs`/`Outputs` classes inside the task body. |
-| **Workflow** | Build a linear pipeline with `Workflow(tasks=[...])` or a DAG with `Workflow.builder()`. The builder accepts `depends_on` for single dependencies, fan-in dicts (`{"field": UpstreamTask}`), and `(Task, "field")` tuples for output field routing. Use `config_fields` to declare which input fields come from `JobConfiguration`. Workflows are validated at build time for cycles, type compatibility, and input completeness. |
+| **Workflow** | Build a linear pipeline with `Workflow(tasks=[...])` or a DAG with `Workflow.builder()`. The builder accepts `depends_on` for single dependencies, fan-in dicts (`{"field": UpstreamTask}`), `(Task, "field")` tuples for output field routing, `collect()` for gathering outputs into collection fields, and `mapped_over=TaskMap(...)` for sequential expansion over configured mappings. Use `config_fields` to declare which input fields come from `JobConfiguration`. Workflows are validated at build time for cycles, type compatibility, and input completeness. |
 | **Job** | Binds a Workflow to a typed config (the root task's input). Tracks `status` (`pending` → `running` → `completed`/`failed`), the final `result`, any `error`, and per-task `task_results`. Optionally accepts a `JobConfiguration` for per-task static config values. A job can only be run once. |
 | **Runner** | Executes tasks in topological order, stopping on the first failure (fail-fast). Supports per-task and per-job timeouts via `signal.alarm` (Unix only). Dispatches lifecycle events to registered hooks. |
 | **ExecutionContext** | Passed to every `run()` call. Provides a `logger`, an auto-generated `correlation_id` (UUID), a `scratch_dir` (temporary directory), and a service registry (`register()`/`resolve()`) for injecting shared resources like DB connections. |
@@ -231,6 +231,163 @@ workflow = (
 )
 ```
 
+## Collecting Multiple Outputs
+
+Use `collect()` when several task outputs should populate one `list[T]` or
+`dict[str, T]` field. Positional members preserve declaration order:
+
+```python
+from taskmaestro import collect
+
+class GridInput(BaseModel):
+    surfaces: list[Surface]
+
+workflow = (
+    Workflow.builder("create_grid")
+    .add_task(LoadSurface, name="top")
+    .add_task(GenerateSurface, name="middle")
+    .add_task(LoadSurface, name="base")
+    .add_task(
+        CreateGrid,
+        depends_on={"surfaces": collect("top", "middle", "base")},
+    )
+    .build()
+)
+```
+
+Use a mapping to preserve aliases in a `dict[str, T]`, and use `(task, "field")`
+to collect a specific output field:
+
+```python
+depends_on={
+    "surfaces": collect({
+        "top": ("top_loader", "surface"),
+        "base": ("base_loader", "surface"),
+    })
+}
+```
+
+The equivalent YAML forms are:
+
+```yaml
+depends_on:
+  surfaces:
+    collect:
+      - top
+      - [middle, generated_surface]
+      - base
+```
+
+```yaml
+depends_on:
+  surfaces:
+    collect:
+      top: [top_loader, surface]
+      base: [base_loader, surface]
+```
+
+Every member is checked against the field's element type when the workflow is
+built. Subtypes are accepted. `collect()` and `collect({})` explicitly create
+empty list and dictionary inputs, respectively.
+
+## Mapped Tasks
+
+A mapped task invokes one task declaration for every entry in a configured
+mapping. Mapped items execute sequentially in mapping declaration order.
+Each item gets a fresh task instance and child `ExecutionContext`.
+
+```python
+from taskmaestro import TaskMap
+
+workflow = (
+    Workflow.builder("create_grid")
+    .add_task(ConnectToResInsight)
+    .add_task(
+        LoadRegularSurface,
+        name="load_surfaces",
+        depends_on={"resinsight": ConnectToResInsight},
+        config_fields=["unit"],
+        mapped_over=TaskMap(
+            over="surfaces",
+            key_as="surface_name",
+            value_as="path",
+            error_mode="fail_fast",
+        ),
+    )
+    .add_task(
+        CreateGrid,
+        depends_on={"surfaces": ("load_surfaces", "root")},
+    )
+    .build()
+)
+```
+
+The mapped task's input model contains the injected key and value fields, not
+the source mapping:
+
+```python
+class LoadSurfaceInput(BaseModel):
+    resinsight: RipsInstance
+    unit: str
+    surface_name: str  # key_as
+    path: str          # value_as
+```
+
+Configure the source through `JobConfiguration`:
+
+```python
+job_configuration = JobConfiguration({
+    "load_surfaces": {
+        "unit": "meters",
+        "surfaces": {
+            "top": "/data/top.irap",
+            "base": "/data/base.irap",
+        },
+    },
+})
+```
+
+The logical output is a `MappedOutput[O]` Pydantic root model containing an
+insertion-ordered `dict[str, O]`, where `O` is the task's declared output type.
+Routing its `root` field lets a downstream input consume the dictionary:
+
+```python
+class CreateGridInput(BaseModel):
+    surfaces: dict[str, RegularSurface]
+```
+
+The equivalent YAML task declaration is:
+
+```yaml
+- task: resinsight.load_regular_surface
+  name: load_surfaces
+  map:
+    over: surfaces
+    key_as: surface_name
+    value_as: path
+    error_mode: fail_fast
+  depends_on:
+    resinsight: resinsight.connect
+  config_fields: [unit]
+```
+
+Input YAML:
+
+```yaml
+load_surfaces:
+  unit: meters
+  surfaces:
+    top: /data/top.irap
+    base: /data/base.irap
+```
+
+`fail_fast` stops at the first failed item. `collect_all` attempts every item
+and reports an aggregate `MappedTaskExecutionError`. An empty mapping succeeds
+with `MappedOutput(root={})`. Per-item records are available in
+`job.mapped_item_results`, and
+built-in logging, timing, and persistence hooks observe individual items.
+Concurrent mapped execution is intentionally deferred.
+
 ## ObjectModel
 
 `ObjectModel[T]` wraps arbitrary (non-Pydantic) objects so they can flow through workflows. Use it as a type alias for simple wrappers, or subclass it to add extra fields:
@@ -343,6 +500,16 @@ result = run_workflow_from_yaml("workflow.yaml", "input.yaml")
 
 YAML supports named task instances (`name:`), per-task input config (keyed by task name in the input file), fan-in dicts, and output field routing via `[task, field]` lists.
 
+How `input.yaml` is read is controlled by `workflow.input_mode`:
+
+| `input_mode` | Meaning |
+|---|---|
+| `auto` (default) | Per-task if every top-level key is a task name whose value is a mapping (or null); otherwise flat. If the file is *also* a valid input for the root task, loading fails and asks you to pick explicitly. |
+| `flat` | The whole mapping is the root task's input model. |
+| `per_task` | Top-level keys must be task names; unknown keys or non-mapping values are errors. |
+
+When the same task class (or the same inner YAML file) appears more than once under different `name:`s, `depends_on` and `result_task` must use the instance name — referencing the class path is rejected as ambiguous.
+
 Use `workflow:` instead of `task:` to compose another YAML workflow. Paths are resolved
 relative to the containing workflow file, and `workflow_input:` optionally supplies the
 inner workflow's per-task configuration:
@@ -405,6 +572,7 @@ WorkflowRunnerError (base)
 ├── JobStateError                 # e.g., re-running a completed job
 ├── ConfigLoadError               # YAML config loading failure
 └── TaskExecutionError            # Runtime task failure
+    ├── MappedTaskExecutionError  # One or more mapped items failed
     ├── TaskOutputTypeError       # Output type mismatch
     └── TaskTimeoutError          # Task exceeded timeout
 ```

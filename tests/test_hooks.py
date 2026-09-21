@@ -26,6 +26,7 @@ from tests.conftest import (
     FailingTask,
     FanInTask,
     NumberInput,
+    NumberOutput,
 )
 
 
@@ -143,6 +144,35 @@ class TestResultPersistenceHook:
         double_data = json.loads(double_path.read_text())
         assert double_data["value"] == 12
 
+    def test_task_name_cannot_escape_output_dir(
+        self, ctx: ExecutionContext, tmp_path: Path
+    ) -> None:
+        """Path separators and '..' in a task name are escaped, not interpreted."""
+
+        class Traversal(Task[NumberInput, NumberOutput]):
+            name = "../escaped"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        out_dir = tmp_path / "sandbox" / "results"
+        wf = Workflow(name="test", tasks=[Traversal])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        Runner(hooks=[ResultPersistenceHook(output_dir=out_dir)]).run(job, ctx=ctx)
+
+        written = list(tmp_path.rglob("*.json"))
+        assert len(written) == 1
+        assert written[0].parent == out_dir
+        assert written[0].name == "..%2Fescaped.json"
+        assert not (tmp_path / "sandbox" / "escaped.json").exists()
+
+    def test_distinct_names_do_not_collide(self, tmp_path: Path) -> None:
+        """Escaping '%' keeps 'a%2Fb' and 'a/b' on different filenames."""
+        from taskmaestro.hooks.persistence import _safe
+
+        assert _safe("a/b") != _safe("a%2Fb")
+        assert "/" not in _safe("a/b")
+
 
 class TestHookErrorHandling:
     def test_hook_error_swallowed(self, ctx: ExecutionContext) -> None:
@@ -155,6 +185,50 @@ class TestHookErrorHandling:
         with pytest.warns(UserWarning, match="BrokenHook raised during task_start"):
             result = Runner(hooks=[BrokenHook()]).run(job, ctx=ctx)
         assert result.status == JobStatus.COMPLETED
+
+    def test_hook_warning_carries_exception_and_category(self, ctx: ExecutionContext) -> None:
+        """The warning names the exception, uses HookError, and attaches it as source."""
+        import warnings
+
+        from taskmaestro import HookError
+
+        class BrokenHook(BaseHook):
+            def on_task_complete(
+                self, job: Job[Any], task: Task[Any, Any], output: BaseModel
+            ) -> None:
+                raise KeyError("missing-service")
+
+        wf = Workflow(name="test", tasks=[AddOne])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            Runner(hooks=[BrokenHook()]).run(job, ctx=ctx)
+
+        hook_warnings = [w for w in caught if issubclass(w.category, HookError)]
+        assert len(hook_warnings) == 1
+        message = str(hook_warnings[0].message)
+        assert "BrokenHook raised during task_complete" in message
+        assert "KeyError('missing-service')" in message
+        assert isinstance(hook_warnings[0].source, KeyError)
+        # HookError is a UserWarning so existing filters still apply.
+        assert issubclass(HookError, UserWarning)
+
+    def test_hook_warning_can_be_escalated(self, ctx: ExecutionContext) -> None:
+        """Users may opt into strictness with a warnings filter on HookError."""
+        import warnings
+
+        from taskmaestro import HookError
+
+        class BrokenHook(BaseHook):
+            def on_job_start(self, job: Job[Any]) -> None:
+                raise RuntimeError("nope")
+
+        wf = Workflow(name="test", tasks=[AddOne])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", HookError)
+            with pytest.raises(HookError, match="RuntimeError\\('nope'\\)"):
+                Runner(hooks=[BrokenHook()]).run(job, ctx=ctx)
 
     def test_multiple_hooks(self, ctx: ExecutionContext) -> None:
         wf = Workflow(name="test", tasks=[AddOne])

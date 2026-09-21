@@ -5,10 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 from taskmaestro.context import ExecutionContext
-from taskmaestro.exceptions import WorkflowDefinitionError
+from taskmaestro.exceptions import WorkflowDefinitionError, WorkflowTaskError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
 from taskmaestro.runner import Runner
-from taskmaestro.task import Task, get_input_type, get_output_type
+from taskmaestro.task import Task, get_input_type
 from taskmaestro.workflow import Workflow
 
 
@@ -39,13 +39,18 @@ def workflow_task(
         WorkflowDefinitionError: If the inner workflow does not have exactly one
             root task without config_fields (unless all roots are covered by
             job_configuration).
+
+    At run time, a failure inside the inner workflow surfaces as
+    :class:`~taskmaestro.exceptions.WorkflowTaskError`, which carries the
+    completed inner :class:`~taskmaestro.job.Job` and chains the original
+    exception as ``__cause__``.
     """
     # Find root tasks: tasks with deps=None and no config_fields
     roots: list[tuple[str, type[Task[Any, Any]]]] = []
     for task_name, deps in workflow._dependencies.items():
         if deps is None:
             config_fields = workflow.get_config_fields(task_name)
-            if not config_fields:
+            if not config_fields and not workflow.is_mapped_task(task_name):
                 roots.append((task_name, workflow._tasks[task_name]))
 
     all_roots_configured = False
@@ -70,8 +75,7 @@ def workflow_task(
     else:
         input_type = get_input_type(roots[0][1])
 
-    result_task_cls = workflow.result_task
-    output_type = get_output_type(result_task_cls)
+    output_type = workflow.get_output_annotation(workflow.result_task_name)
 
     resolved_name = name if name is not None else workflow.name
     inner_wf = workflow
@@ -87,10 +91,7 @@ def workflow_task(
             job = Job(workflow=inner_wf, config=cfg, job_configuration=inner_jc)
             result_job = Runner().run(job, ctx=ctx)
             if result_job.status == JobStatus.FAILED:
-                raise RuntimeError(
-                    f"Inner workflow '{inner_wf.name}' failed at task "
-                    f"'{result_job.failed_task}': {result_job.error}"
-                )
+                raise WorkflowTaskError(inner_wf.name, result_job) from result_job.exception
             return result_job.result
 
     _WorkflowTask.__name__ = f"WorkflowTask_{resolved_name}"

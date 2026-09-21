@@ -3,6 +3,7 @@
 __version__ = "0.2.0"
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.dependencies import collect
 from taskmaestro.discovery import (
     TASK_ENTRY_POINT_GROUP,
     WORKFLOW_ENTRY_POINT_GROUP,
@@ -18,16 +19,19 @@ from taskmaestro.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     JobStateError,
+    MappedTaskExecutionError,
     PluginLoadError,
     TaskExecutionError,
     TaskOutputTypeError,
     TaskTimeoutError,
     WorkflowDefinitionError,
     WorkflowRunnerError,
+    WorkflowTaskError,
 )
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
+from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.object_model import ObjectModel
-from taskmaestro.runner import Runner
+from taskmaestro.runner import HookError, Runner
 from taskmaestro.task import Task
 from taskmaestro.visualization import to_mermaid
 from taskmaestro.workflow import Workflow, WorkflowBuilder
@@ -45,17 +49,21 @@ __all__ = [
     "CycleDetectedError",
     "EmptyConfig",
     "ExecutionContext",
+    "HookError",
     "IncompleteInputError",
     "Job",
     "JobConfiguration",
     "JobStateError",
     "JobStatus",
     "LoadedWorkflow",
+    "MappedOutput",
+    "MappedTaskExecutionError",
     "ObjectModel",
     "PluginLoadError",
     "Runner",
     "Task",
     "TaskExecutionError",
+    "TaskMap",
     "TaskOutputTypeError",
     "TaskResult",
     "TaskStatus",
@@ -64,6 +72,8 @@ __all__ = [
     "WorkflowBuilder",
     "WorkflowDefinitionError",
     "WorkflowRunnerError",
+    "WorkflowTaskError",
+    "collect",
     "get_registered_task",
     "get_registered_workflow",
     "load_workflow_from_yaml",

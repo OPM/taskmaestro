@@ -49,9 +49,72 @@ class TestLinearWorkflow:
         assert wf.result_task is AddOne
         assert wf.topological_order() == [("add_one", AddOne)]
 
+    def test_explicit_result_task_overrides_last(self) -> None:
+        wf = Workflow(name="test", tasks=[AddOne, Double], result_task=AddOne)
+        assert wf.result_task is AddOne
+        assert wf.result_task_name == "add_one"
+
     def test_empty_workflow(self) -> None:
         wf = Workflow(name="empty")
         assert wf._tasks == {}
+
+    def test_result_task_without_tasks_is_recorded(self) -> None:
+        """tasks=None with result_task keeps the name; validation happens on use."""
+        wf = Workflow(name="empty", result_task=AddOne)
+        assert wf.result_task_name == "add_one"
+
+    def test_empty_task_list_is_rejected(self) -> None:
+        """An explicit empty list is a definition error, unlike tasks=None."""
+        with pytest.raises(WorkflowDefinitionError, match="empty task list"):
+            Workflow(name="empty", tasks=[])
+
+    def test_duplicate_names_raise_not_cycle(self) -> None:
+        """Linear shorthand rejects duplicates instead of reporting a bogus cycle."""
+        with pytest.raises(WorkflowDefinitionError, match="Duplicate task name 'add_one'"):
+            Workflow(name="dup", tasks=[AddOne, AddOne])
+
+    def test_unregistered_result_task_raises(self) -> None:
+        with pytest.raises(
+            WorkflowDefinitionError, match=r"result_task 'double' is not registered"
+        ):
+            Workflow(name="test", tasks=[AddOne], result_task=Double)
+
+    def test_subclass_output_is_accepted_on_single_edge(self) -> None:
+        """Single-dep edges use type compatibility, not identity."""
+
+        class BaseOut(BaseModel):
+            value: int
+
+        class RichOut(BaseOut):
+            extra: str = ""
+
+        class Producer(Task[NumberInput, RichOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> RichOut:
+                return RichOut(value=input.value)
+
+        class Consumer(Task[BaseOut, NumberOutput]):
+            name = "consumer"
+
+            def run(self, input: BaseOut, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        wf = Workflow(name="sub", tasks=[Producer, Consumer])
+        assert wf.result_task is Consumer
+
+    def test_incompatible_single_edge_message_is_complete(self) -> None:
+        class Consumer(Task[NumberInput, NumberOutput]):
+            name = "consumer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=1)
+
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"add_one outputs NumberOutput but consumer expects NumberInput",
+        ):
+            Workflow(name="bad", tasks=[AddOne, Consumer])
 
 
 class TestDAGWorkflow:
@@ -218,6 +281,52 @@ class TestResultTask:
 
 class TestOutputFieldRouting:
     """Tests for Feature 2: output field routing via tuple deps."""
+
+    def test_generic_field_mismatch_message_keeps_type_args(self) -> None:
+        """The message says list[int], not just 'list'."""
+
+        class ListOut(BaseModel):
+            items: list[int]
+
+        class Producer(Task[NumberInput, ListOut]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> ListOut:
+                return ListOut(items=[])
+
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"producer\.items is list\[int\] but double expects NumberOutput",
+        ):
+            (
+                Workflow.builder("bad")
+                .add_task(Producer)
+                .add_task(Double, depends_on=(Producer, "items"))
+                .build()
+            )
+
+    def test_field_ref_accepts_subclass(self) -> None:
+        """Field-ref edges use type compatibility, not identity."""
+
+        class RichNumber(NumberOutput):
+            note: str = ""
+
+        class Wrapped(BaseModel):
+            inner: RichNumber
+
+        class Producer(Task[NumberInput, Wrapped]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> Wrapped:
+                return Wrapped(inner=RichNumber(value=input.value))
+
+        wf = (
+            Workflow.builder("ok")
+            .add_task(Producer)
+            .add_task(Double, depends_on=(Producer, "inner"))
+            .build()
+        )
+        assert wf.result_task is Double
 
     def test_valid_field_ref(self) -> None:
         """Single field ref validates and builds."""
@@ -537,6 +646,19 @@ class TestNamedTaskInstances:
         )
         assert wf.result_task is Double
         assert wf.result_task_name == "my_double"
+
+    def test_unknown_result_task_string_raises_at_build(self) -> None:
+        """A result_task name that was never added fails in build(), not later."""
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"result_task 'nope' is not registered.*known tasks: \['add_one', 'double'\]",
+        ):
+            (
+                Workflow.builder(name="bad", result_task="nope")
+                .add_task(AddOne)
+                .add_task(Double, depends_on=AddOne)
+                .build()
+            )
 
     def test_dep_not_found_string_raises(self) -> None:
         """String dependency that doesn't exist raises."""

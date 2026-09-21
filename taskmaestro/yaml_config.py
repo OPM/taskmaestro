@@ -12,15 +12,26 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
 from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
 from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
+from taskmaestro.mapping import TaskMap
 from taskmaestro.runner import Runner
 from taskmaestro.task import Task, get_input_type
 from taskmaestro.workflow import Workflow, WorkflowBuilder
 
 # --- Pydantic schema models for YAML validation ---
+
+
+class TaskMapConfig(BaseModel):
+    """Mapped execution settings for a YAML task entry."""
+
+    over: str
+    key_as: str
+    value_as: str
+    error_mode: typing.Literal["fail_fast", "collect_all"] = "fail_fast"
 
 
 class TaskConfig(BaseModel):
@@ -32,6 +43,7 @@ class TaskConfig(BaseModel):
     name: str | None = None
     depends_on: str | list[str] | dict[str, Any] | None = None
     config_fields: list[str] | None = None
+    map: TaskMapConfig | None = None
 
     @model_validator(mode="after")
     def _check_task_or_workflow(self) -> TaskConfig:
@@ -71,6 +83,7 @@ class WorkflowSectionConfig(BaseModel):
 
     name: str
     result_task: str | None = None
+    input_mode: typing.Literal["auto", "flat", "per_task"] = "auto"
     tasks: list[TaskConfig] = Field(min_length=1)
 
 
@@ -83,6 +96,42 @@ class YamlWorkflowConfig(BaseModel):
 
 
 # --- Utilities ---
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate mapping keys."""
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._checked_mappings: set[yaml.nodes.MappingNode] = set()
+
+    def flatten_mapping(self, node: yaml.nodes.MappingNode) -> None:
+        # Check declarations before merges add inherited keys. Anchors can reuse
+        # already-flattened nodes, whose override keys are legitimately repeated.
+        if node in self._checked_mappings:
+            return
+        self._checked_mappings.add(node)
+        keys: set[Any] = set()
+        for key_node, _value_node in node.value:
+            key = (
+                "<<"
+                if key_node.tag == "tag:yaml.org,2002:merge"
+                else self.construct_object(key_node)
+            )
+            if key in keys:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            keys.add(key)
+        super().flatten_mapping(node)
+
+
+def _yaml_load(text: str) -> Any:
+    """Safely parse YAML while rejecting duplicate mapping keys."""
+    return yaml.load(text, Loader=_UniqueKeyLoader)
 
 
 def import_class(dotted_path: str) -> type[Any]:
@@ -124,6 +173,87 @@ def _coerce_hook_params(hook_cls: type[Any], params: dict[str, Any]) -> dict[str
 
 
 @dataclass(frozen=True)
+class _LinearDep:
+    """An already-registered upstream name produced by linear-mode chaining."""
+
+    upstream: str
+
+
+@dataclass(frozen=True)
+class _Entry:
+    """One resolved ``tasks:`` entry, kept positionally."""
+
+    config: TaskConfig
+    cls: type[Task[Any, Any]]
+    key: str  # import path or inner-workflow path as written in YAML
+    registered_name: str
+
+
+def _decide_input_mode(
+    mode: typing.Literal["auto", "flat", "per_task"],
+    raw_input: dict[str, Any],
+    entries: list[_Entry],
+    *,
+    linear: bool,
+) -> bool:
+    """Return True when *raw_input* is per-task configuration.
+
+    See the comment at the call site for the three modes.  Raises
+    ConfigLoadError for an explicit ``per_task`` file with unknown keys or
+    non-mapping values, and for an ``auto`` file that reads validly both ways.
+    """
+    names = {entry.registered_name for entry in entries}
+
+    if mode == "flat":
+        return False
+
+    if mode == "per_task":
+        for key, value in raw_input.items():
+            if key not in names:
+                raise ConfigLoadError(
+                    f"input_mode is 'per_task' but top-level key '{key}' is not a task "
+                    f"name (known tasks: {sorted(names)})"
+                )
+            if value is not None and not isinstance(value, dict):
+                raise ConfigLoadError(
+                    f"input_mode is 'per_task' but the value for task '{key}' is not a "
+                    f"mapping (got {type(value).__name__})"
+                )
+        return True
+
+    # auto
+    looks_per_task = bool(raw_input) and all(
+        key in names and isinstance(raw_input[key], (dict, type(None))) for key in raw_input
+    )
+    if not looks_per_task:
+        return False
+
+    # The heuristic fired.  If the same mapping is also a valid input for the
+    # sole unconfigured root task, both readings are plausible: refuse to guess.
+    roots = [
+        entry
+        for index, entry in enumerate(entries)
+        if (entry.config.depends_on is None if not linear else index == 0)
+        and not entry.config.config_fields
+        and entry.config.map is None
+    ]
+    if len(roots) == 1:
+        try:
+            get_input_type(roots[0].cls).model_validate(raw_input)
+        except ValidationError:
+            pass
+        else:
+            raise ConfigLoadError(
+                f"Input file is ambiguous: its top-level keys {sorted(raw_input)} are task "
+                f"names, but the mapping is also a valid "
+                f"{get_input_type(roots[0].cls).__name__} for root task "
+                f"'{roots[0].registered_name}'. Set workflow.input_mode to 'flat' or "
+                f"'per_task'."
+            )
+    return True
+
+
+@dataclass(frozen=True)
 class LoadedWorkflow:
     """A fully resolved workflow ready to execute."""
 
@@ -153,19 +283,30 @@ class LoadedWorkflow:
 def _load_workflow_only(
     workflow_path: Path,
     input_path: Path | None = None,
+    *,
+    _ancestors: frozenset[Path] = frozenset(),
 ) -> tuple[Workflow, JobConfiguration | None]:
     """Build a Workflow and optional JobConfiguration from YAML files.
 
     This is the core logic shared by ``load_workflow_from_yaml`` and
-    recursive ``workflow:`` references in YAML configs.
+    recursive ``workflow:`` references in YAML configs.  ``_ancestors`` holds
+    the resolved paths of every enclosing workflow file so that a self- or
+    mutually-referencing ``workflow:`` entry is rejected instead of recursing
+    without bound.
 
     Returns (workflow, job_configuration).
     """
     from taskmaestro.workflow_task import workflow_task as _workflow_task
 
+    resolved_path = workflow_path.resolve()
+    if resolved_path in _ancestors:
+        chain = " -> ".join(str(p) for p in (*sorted(_ancestors), resolved_path))
+        raise ConfigLoadError(f"Recursive workflow reference: {chain}")
+    ancestors = _ancestors | {resolved_path}
+
     # 1. Parse workflow YAML
     try:
-        raw = yaml.safe_load(workflow_path.read_text())
+        raw = _yaml_load(workflow_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -178,7 +319,7 @@ def _load_workflow_only(
     raw_input: dict[str, Any] = {}
     if input_path is not None:
         try:
-            raw_input = yaml.safe_load(input_path.read_text())
+            raw_input = _yaml_load(input_path.read_text())
         except yaml.YAMLError as exc:
             raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
         except OSError as exc:
@@ -193,9 +334,11 @@ def _load_workflow_only(
     except ValidationError as exc:
         raise ConfigLoadError(f"YAML schema validation error: {exc}") from exc
 
-    # 4. Resolve task import paths (handles both task: and workflow: entries)
+    # 4. Resolve task import paths (handles both task: and workflow: entries).
+    #    Entries are kept positionally: the same class path or inner YAML file
+    #    may legitimately appear more than once under different ``name:``s.
     base_dir = workflow_path.parent
-    task_classes: dict[str, type[Task[Any, Any]]] = {}
+    entries: list[_Entry] = []
     installed_task_names = registered_task_names()
     for task_config in config.workflow.tasks:
         if task_config.workflow:
@@ -204,11 +347,14 @@ def _load_workflow_only(
             inner_input_path = (
                 base_dir / task_config.workflow_input if task_config.workflow_input else None
             )
-            inner_wf, inner_jc = _load_workflow_only(inner_wf_path, inner_input_path)
+            inner_wf, inner_jc = _load_workflow_only(
+                inner_wf_path, inner_input_path, _ancestors=ancestors
+            )
             inner_name = task_config.name if task_config.name else inner_wf.name
-            wrapped_cls = _workflow_task(inner_wf, name=inner_name, job_configuration=inner_jc)
-            # Use a synthetic key for this entry (the workflow path)
-            task_classes[task_config.workflow] = wrapped_cls
+            cls: type[Task[Any, Any]] = _workflow_task(
+                inner_wf, name=inner_name, job_configuration=inner_jc
+            )
+            key = task_config.workflow
         else:
             assert task_config.task is not None
             try:
@@ -220,40 +366,85 @@ def _load_workflow_only(
                 raise ConfigLoadError(str(exc)) from exc
             if not (isinstance(cls, type) and issubclass(cls, Task)):
                 raise ConfigLoadError(f"'{task_config.task}' is not a Task subclass")
-            task_classes[task_config.task] = cls
-
-    # Helper to get the lookup key for a task config entry
-    def _task_key(tc: TaskConfig) -> str:
-        return tc.workflow if tc.workflow else tc.task  # type: ignore[return-value]
+            key = task_config.task
+        registered_name = task_config.name if task_config.name else cls.name
+        entries.append(_Entry(task_config, cls, key, registered_name))
 
     # 5. Build a lookup from instance names and import paths to registered names.
-    name_lookup: dict[str, str] = {}
-    for task_config in config.workflow.tasks:
-        key = _task_key(task_config)
-        registered_name = task_config.name if task_config.name else task_classes[key].name
-        name_lookup[key] = registered_name
-        if task_config.name:
-            name_lookup[task_config.name] = registered_name
+    #    A key that maps to more than one registered name is ambiguous and is
+    #    rejected when used, with the candidates listed.
+    candidates: dict[str, set[str]] = {}
+    for entry in entries:
+        candidates.setdefault(entry.key, set()).add(entry.registered_name)
+        if entry.config.name:
+            candidates.setdefault(entry.config.name, set()).add(entry.registered_name)
 
-    def _resolve_yaml_dep(dep_str: str, context_task: str) -> str:
+    def _resolve_yaml_dep(dep_str: str, context_task: str, *, what: str = "Dependency") -> str:
         """Resolve a YAML dependency string to a registered task name."""
-        if dep_str in name_lookup:
-            return name_lookup[dep_str]
-        raise ConfigLoadError(f"Dependency '{dep_str}' for task '{context_task}' not found")
+        where = f" for task '{context_task}'" if context_task else ""
+        names = candidates.get(dep_str)
+        if names is None:
+            raise ConfigLoadError(f"{what} '{dep_str}'{where} not found")
+        if len(names) > 1:
+            raise ConfigLoadError(
+                f"{what} '{dep_str}'{where} is ambiguous; it matches "
+                f"{sorted(names)}. Use the instance name."
+            )
+        return next(iter(names))
+
+    def _resolve_yaml_output_ref(raw_ref: Any, context_task: str) -> OutputReference:
+        """Resolve a YAML task or ``[task, field]`` output reference."""
+        if isinstance(raw_ref, str):
+            return _resolve_yaml_dep(raw_ref, context_task)
+        if isinstance(raw_ref, list):
+            if len(raw_ref) != 2 or not all(isinstance(item, str) for item in raw_ref):
+                raise ConfigLoadError(
+                    f"Collection member must be a task name or [task, field], "
+                    f"got {raw_ref!r} for task '{context_task}'"
+                )
+            return (_resolve_yaml_dep(raw_ref[0], context_task), raw_ref[1])
+        raise ConfigLoadError(
+            f"Collection member must be a task name or [task, field], "
+            f"got {raw_ref!r} for task '{context_task}'"
+        )
+
+    def _resolve_yaml_collection(raw_collection: Any, context_task: str) -> CollectionDependency:
+        """Resolve a YAML collect list or mapping."""
+        if isinstance(raw_collection, list):
+            return collect(
+                *(_resolve_yaml_output_ref(member, context_task) for member in raw_collection)
+            )
+        if isinstance(raw_collection, dict):
+            if not all(isinstance(key, str) for key in raw_collection):
+                raise ConfigLoadError(f"Collection keys must be strings for task '{context_task}'")
+            return collect(
+                {
+                    key: _resolve_yaml_output_ref(member, context_task)
+                    for key, member in raw_collection.items()
+                }
+            )
+        raise ConfigLoadError(
+            f"'collect' must contain a list or mapping for task '{context_task}'"
+        )
 
     # 6. Detect linear vs DAG mode
-    has_depends_on = any(tc.depends_on is not None for tc in config.workflow.tasks)
+    has_depends_on = any(
+        tc.depends_on is not None or tc.map is not None for tc in config.workflow.tasks
+    )
 
-    # 6b. Detect per-task config format early (before building workflow)
-    all_registered_names: set[str] = set()
-    for task_config in config.workflow.tasks:
-        key = _task_key(task_config)
-        registered_name = task_config.name if task_config.name else task_classes[key].name
-        all_registered_names.add(registered_name)
-
-    is_per_task_config = bool(raw_input) and all(
-        key in all_registered_names and isinstance(raw_input[key], (dict, type(None)))
-        for key in raw_input
+    # 6b. Decide how the input YAML is interpreted.
+    #
+    #   flat      — the mapping is the single unconfigured root task's input model
+    #   per_task  — top-level keys are task names, values are per-task config
+    #   auto      — infer; every key must name a task with a mapping/null value.
+    #               If the flat reading is *also* valid the file is ambiguous
+    #               and the user must set ``input_mode`` explicitly.
+    entry_by_name = {entry.registered_name: entry for entry in entries}
+    is_per_task_config = _decide_input_mode(
+        config.workflow.input_mode,
+        raw_input,
+        entries,
+        linear=not has_depends_on,
     )
 
     per_task_data: dict[str, dict[str, Any]] = {}
@@ -262,51 +453,63 @@ def _load_workflow_only(
         for task_name, task_values in raw_input.items():
             per_task_data[task_name] = dict(task_values) if task_values else {}
             if task_values:
-                per_task_cfg_fields[task_name] = list(task_values.keys())
+                task_config = entry_by_name[task_name].config
+                map_source = task_config.map.over if task_config.map is not None else None
+                per_task_cfg_fields[task_name] = [
+                    field_name for field_name in task_values if field_name != map_source
+                ]
 
     # 7. Resolve result_task
     result_task_name: str | None = None
     if config.workflow.result_task:
-        if config.workflow.result_task in name_lookup:
-            result_task_name = name_lookup[config.workflow.result_task]
-        else:
-            raise ConfigLoadError(f"result_task '{config.workflow.result_task}' not found")
+        result_task_name = _resolve_yaml_dep(config.workflow.result_task, "", what="result_task")
 
-    # 8. Build Workflow
-    if not has_depends_on:
-        task_list = [task_classes[_task_key(tc)] for tc in config.workflow.tasks]
-        result_task_cls = (
-            task_classes[config.workflow.result_task] if config.workflow.result_task else None
+    # 8. Build Workflow. Both linear and DAG configs go through the builder so
+    #    that ``name:`` overrides, config_fields and validation behave the same.
+    #    In linear mode each task depends on the whole output of the previous one.
+    builder = WorkflowBuilder(config.workflow.name, result_task=result_task_name)
+    previous_registered: str | None = None
+    for entry in entries:
+        task_config = entry.config
+        key = entry.key
+        cls = entry.cls
+        registered_name = entry.registered_name
+        instance_name = task_config.name
+        cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
+        mapped_over = (
+            TaskMap(**task_config.map.model_dump()) if task_config.map is not None else None
         )
-        workflow = Workflow(
-            name=config.workflow.name,
-            tasks=task_list,
-            result_task=result_task_cls,
-        )
-        for task_config in config.workflow.tasks:
-            key = _task_key(task_config)
-            registered_name = task_config.name if task_config.name else task_classes[key].name
-            cfg = task_config.config_fields or per_task_cfg_fields.get(registered_name)
-            if cfg:
-                workflow._config_fields[registered_name] = set(cfg)
-    else:
-        builder = WorkflowBuilder(
-            config.workflow.name,
-            result_task=result_task_name,
-        )
-        for task_config in config.workflow.tasks:
-            key = _task_key(task_config)
-            cls = task_classes[key]
-            deps = task_config.depends_on
-            registered_name = name_lookup[key]
-            instance_name = task_config.name
-            cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
+        deps: str | list[str] | dict[str, Any] | _LinearDep | None = task_config.depends_on
+        if not has_depends_on and previous_registered is not None:
+            # Linear mode: chain on the previous task's registered name, which
+            # the builder accepts verbatim as a string dependency.
+            deps = _LinearDep(previous_registered)
+        previous_registered = registered_name
+
+        try:
             if deps is None:
-                builder.add_task(cls, name=instance_name, config_fields=cfg_fields)
+                builder.add_task(
+                    cls,
+                    name=instance_name,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
+                )
+            elif isinstance(deps, _LinearDep):
+                builder.add_task(
+                    cls,
+                    name=instance_name,
+                    depends_on=deps.upstream,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
+                )
             elif isinstance(deps, str):
                 resolved_dep = _resolve_yaml_dep(deps, key)
                 builder.add_task(
-                    cls, name=instance_name, depends_on=resolved_dep, config_fields=cfg_fields
+                    cls,
+                    name=instance_name,
+                    depends_on=resolved_dep,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
             elif isinstance(deps, list):
                 if len(deps) != 2 or not all(isinstance(e, str) for e in deps):
@@ -321,13 +524,20 @@ def _load_workflow_only(
                     name=instance_name,
                     depends_on=(resolved_dep, field_name),
                     config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
             elif isinstance(deps, dict):
                 fan_in: dict[
-                    str, type[Task[Any, Any]] | str | tuple[type[Task[Any, Any]] | str, str]
+                    str,
+                    type[Task[Any, Any]]
+                    | str
+                    | tuple[type[Task[Any, Any]] | str, str]
+                    | CollectionDependency,
                 ] = {}
                 for field_name, upstream_ref in deps.items():
-                    if isinstance(upstream_ref, list):
+                    if isinstance(upstream_ref, dict) and set(upstream_ref) == {"collect"}:
+                        fan_in[field_name] = _resolve_yaml_collection(upstream_ref["collect"], key)
+                    elif isinstance(upstream_ref, list):
                         if len(upstream_ref) != 2 or not all(
                             isinstance(e, str) for e in upstream_ref
                         ):
@@ -339,16 +549,27 @@ def _load_workflow_only(
                         up_path, up_field = upstream_ref
                         resolved_dep = _resolve_yaml_dep(up_path, key)
                         fan_in[field_name] = (resolved_dep, up_field)
-                    else:
+                    elif isinstance(upstream_ref, str):
                         resolved_dep = _resolve_yaml_dep(upstream_ref, key)
                         fan_in[field_name] = resolved_dep
+                    else:
+                        raise ConfigLoadError(
+                            f"Invalid dependency {upstream_ref!r} for field "
+                            f"'{field_name}' on task '{key}'"
+                        )
                 builder.add_task(
-                    cls, name=instance_name, depends_on=fan_in, config_fields=cfg_fields
+                    cls,
+                    name=instance_name,
+                    depends_on=fan_in,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
-        try:
-            workflow = builder.build()
-        except Exception as exc:
+        except WorkflowDefinitionError as exc:
             raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
+    try:
+        workflow = builder.build()
+    except Exception as exc:
+        raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
 
     # 9. Build JobConfiguration if per-task config detected
     job_configuration: JobConfiguration | None = None
@@ -371,7 +592,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 1. Parse workflow YAML (needed for runner/context config)
     try:
-        raw = yaml.safe_load(workflow_path.read_text())
+        raw = _yaml_load(workflow_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -382,7 +603,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 2. Parse input YAML
     try:
-        raw_input = yaml.safe_load(input_path.read_text())
+        raw_input = _yaml_load(input_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -402,26 +623,36 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 5. Validate input and build Job
     job: Job[Any]
-    if job_configuration is not None:
-        job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
-    else:
-        # Flat config mode: find root tasks from the built workflow
-        root_task_classes = [
-            workflow._tasks[task_name]
-            for task_name, deps in workflow._dependencies.items()
-            if deps is None and not workflow.get_config_fields(task_name)
-        ]
-        assert root_task_classes, (
-            "job_configuration is None yet no roots found without config_fields"
-        )
+    try:
+        if job_configuration is not None:
+            job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
+        else:
+            # Flat config mode: find root tasks from the built workflow
+            root_task_classes = [
+                workflow._tasks[task_name]
+                for task_name, deps in workflow._dependencies.items()
+                if deps is None and not workflow.get_config_fields(task_name)
+            ]
+            if not root_task_classes and all(
+                deps is not None for deps in workflow._dependencies.values()
+            ):
+                # The workflow is self-contained, for example a task fed only by
+                # explicitly empty collection dependencies.
+                job = Job(workflow, EmptyConfig())
+            elif not root_task_classes:
+                raise ConfigLoadError(
+                    "Workflow has configured root tasks but no per-task input configuration"
+                )
+            else:
+                input_type = get_input_type(root_task_classes[0])
+                try:
+                    validated_input = input_type.model_validate(raw_input)
+                except ValidationError as exc:
+                    raise ConfigLoadError(f"Input validation error: {exc}") from exc
 
-        input_type = get_input_type(root_task_classes[0])
-        try:
-            validated_input = input_type.model_validate(raw_input)
-        except ValidationError as exc:
-            raise ConfigLoadError(f"Input validation error: {exc}") from exc
-
-        job = Job(workflow, validated_input)
+                job = Job(workflow, validated_input)
+    except WorkflowDefinitionError as exc:
+        raise ConfigLoadError(f"Job validation failed: {exc}") from exc
 
     # 6. Instantiate hooks
     hooks: list[BaseHook] = []

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from taskmaestro import (
     EmptyConfig,
@@ -83,6 +83,9 @@ class TestFailurePaths:
         assert result.failed_task == "failing_task"
         assert result.error is not None
         assert "intentionally" in result.error
+        # The original exception object is retained alongside its string form.
+        assert isinstance(result.exception, ValueError)
+        assert str(result.exception) == result.error
 
     def test_output_type_mismatch(self, ctx: ExecutionContext) -> None:
         wf = Workflow(name="test", tasks=[WrongOutputTask])
@@ -261,6 +264,194 @@ class TestTimeouts:
         assert result.status == JobStatus.FAILED
         assert "timed out" in (result.error or "")
 
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_job_timeout_survives_task_with_own_timeout(self, ctx: ExecutionContext) -> None:
+        """A task's own alarm must not cancel the job deadline for later tasks."""
+        import time
+
+        class QuickWithTimeout(Task[NumberInput, NumberOutput]):
+            name = "quick"
+            timeout_seconds = 30
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        class SlowNoTimeout(Task[NumberOutput, NumberOutput]):
+            name = "slow_no_timeout"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                time.sleep(5)
+                return input
+
+        wf = Workflow(name="test", tasks=[QuickWithTimeout, SlowNoTimeout])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        start = time.monotonic()
+        result = Runner().run(job, ctx=ctx, timeout_seconds=0.5)
+        assert time.monotonic() - start < 3
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "slow_no_timeout"
+        assert "Job timed out after 0.5s" in (result.error or "")
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_job_timeout_survives_nested_workflow_task(self, ctx: ExecutionContext) -> None:
+        """An inner workflow's runner must not cancel the outer job deadline."""
+        import time
+
+        class InnerWithTimeout(Task[NumberInput, NumberOutput]):
+            name = "inner_with_timeout"
+            timeout_seconds = 30
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        class SlowNoTimeout(Task[NumberOutput, NumberOutput]):
+            name = "slow_no_timeout"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                time.sleep(5)
+                return input
+
+        inner = Workflow(name="inner", tasks=[InnerWithTimeout]).as_task(name="inner")
+        wf = Workflow(name="outer", tasks=[inner, SlowNoTimeout])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        start = time.monotonic()
+        result = Runner().run(job, ctx=ctx, timeout_seconds=0.5)
+        assert time.monotonic() - start < 3
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "slow_no_timeout"
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_expired_job_deadline_fails_next_task_immediately(self, ctx: ExecutionContext) -> None:
+        """If the deadline passes during a task, the following task is not started."""
+        import time
+
+        ran: list[str] = []
+
+        class Sleeper(Task[NumberInput, NumberOutput]):
+            name = "sleeper"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                ran.append(self.name)
+                time.sleep(0.3)
+                return NumberOutput(value=input.value)
+
+        class Never(Task[NumberOutput, NumberOutput]):
+            name = "never"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                ran.append(self.name)
+                return input
+
+        wf = Workflow(name="test", tasks=[Sleeper, Never])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        # Deadline expires while Sleeper is running; Sleeper itself is only
+        # interrupted by the alarm, but Never must not run at all.
+        result = Runner().run(job, ctx=ctx, timeout_seconds=0.2)
+        assert result.status == JobStatus.FAILED
+        assert ran == ["sleeper"]
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_deadline_already_expired_before_next_task(self, ctx: ExecutionContext) -> None:
+        """A task that swallows the alarm and overruns the deadline still stops the job."""
+        import time
+        from contextlib import suppress
+
+        from taskmaestro.exceptions import TaskTimeoutError
+
+        ran: list[str] = []
+
+        class SwallowsAlarm(Task[NumberInput, NumberOutput]):
+            name = "swallows_alarm"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                ran.append(self.name)
+                # A misbehaving task that ignores the job deadline.
+                with suppress(TaskTimeoutError):
+                    time.sleep(0.6)
+                return NumberOutput(value=input.value)
+
+        class Never(Task[NumberOutput, NumberOutput]):
+            name = "never"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                ran.append(self.name)
+                return input
+
+        wf = Workflow(name="test", tasks=[SwallowsAlarm, Never])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        result = Runner().run(job, ctx=ctx, timeout_seconds=0.2)
+
+        assert ran == ["swallows_alarm"]
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "never"
+        assert result.error == "Job timed out after 0.2s"
+        assert [r.status for r in result.task_results] == [
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+        ]
+
+    def test_arm_raises_when_deadline_already_passed(self) -> None:
+        import time
+
+        from taskmaestro.exceptions import TaskTimeoutError
+        from taskmaestro.runner import _Deadline
+
+        deadline = _Deadline(job_timeout=1.0, job_deadline=time.monotonic() - 1)
+        with pytest.raises(TaskTimeoutError, match=r"Job timed out after 1\.0s"):
+            Runner()._arm(None, "task", deadline)
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_sub_second_timeout_is_not_truncated(self, ctx: ExecutionContext) -> None:
+        """timeout_seconds=1.9 must allow a 1.4s task to finish (was truncated to 1s)."""
+        import time
+
+        class MidTask(Task[NumberInput, NumberOutput]):
+            name = "mid"
+            timeout_seconds = 1.9
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                time.sleep(1.4)
+                return NumberOutput(value=input.value)
+
+        wf = Workflow(name="test", tasks=[MidTask])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.COMPLETED
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_previous_sigalrm_handler_restored(self, ctx: ExecutionContext) -> None:
+        import signal
+
+        def sentinel(signum: int, frame: object) -> None:  # pragma: no cover
+            pass
+
+        previous = signal.signal(signal.SIGALRM, sentinel)
+        try:
+            wf = Workflow(name="test", tasks=[AddOne])
+            job = Job(workflow=wf, config=NumberInput(value=1))
+            Runner().run(job, ctx=ctx, timeout_seconds=60)
+            assert signal.getsignal(signal.SIGALRM) is sentinel
+        finally:
+            signal.signal(signal.SIGALRM, previous)
+
 
 class TestAlarmUnavailable:
     def test_alarm_unavailable_warns(self, ctx: ExecutionContext) -> None:
@@ -275,6 +466,53 @@ class TestAlarmUnavailable:
         ):
             result = Runner().run(job, ctx=ctx, timeout_seconds=60)
         assert result.status == JobStatus.COMPLETED
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_timeouts_in_non_main_thread_warn_and_continue(self) -> None:
+        """signal.signal() raises ValueError off the main thread; the job must still finish."""
+        import threading
+        import warnings
+
+        outcome: dict[str, object] = {}
+
+        def worker() -> None:
+            wf = Workflow(name="test", tasks=[AddOne, Double])
+            job = Job(workflow=wf, config=NumberInput(value=1))
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                try:
+                    result = Runner().run(job, timeout_seconds=60)
+                except Exception as exc:  # pragma: no cover - the bug under test
+                    outcome["exc"] = exc
+                    return
+            outcome["status"] = result.status
+            outcome["warnings"] = [str(w.message) for w in caught]
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+
+        assert "exc" not in outcome, outcome.get("exc")
+        assert outcome["status"] == JobStatus.COMPLETED
+        messages = outcome["warnings"]
+        assert isinstance(messages, list)
+        assert len(messages) == 1  # warned once per run, not per task
+        assert "signal.alarm not available" in messages[0]
+
+    def test_arming_failure_marks_task_failed_not_running(self, ctx: ExecutionContext) -> None:
+        """An unexpected error while arming the timer is recorded as a task failure."""
+        from unittest.mock import patch
+
+        wf = Workflow(name="test", tasks=[SlowTask])
+        job = Job(workflow=wf, config=NumberInput(value=1))
+        with patch.object(Runner, "_arm", side_effect=RuntimeError("boom")):
+            result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "slow_task"
+        assert result.error == "boom"
 
 
 class TestContextIntegration:
@@ -409,6 +647,26 @@ class TestConfigFieldsExecution:
         assert result.status == JobStatus.COMPLETED
         # AddOne: 3+1=4, FanInWithConfig: "hello:4"
         assert result.result.combined == "hello:4"  # type: ignore[union-attr]
+
+    def test_extra_config_values_reach_input_model(self, ctx: ExecutionContext) -> None:
+        """Configured values are passed through to the input model even when they
+        are not listed in config_fields, so the model decides how to treat them."""
+
+        class StrictInput(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            path: str
+
+        class StrictTask(Task[StrictInput, NumberOutput]):
+            name = "strict_task"
+
+            def run(self, input: StrictInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=len(input.path))
+
+        wf = Workflow.builder("strict").add_task(StrictTask, config_fields=["path"]).build()
+        jc = JobConfiguration({"strict_task": {"path": "/data", "unexpected": 1}})
+        job = Job(wf, EmptyConfig(), job_configuration=jc)
+        with pytest.raises(ValidationError, match="unexpected"):
+            Runner().run(job, ctx=ctx)
 
     def test_backward_compat_no_config(self, ctx: ExecutionContext) -> None:
         """Workflow without config_fields runs normally."""
