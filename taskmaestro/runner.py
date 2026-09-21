@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import signal
+import time
 import warnings
 from collections.abc import Mapping
+from contextlib import suppress
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -26,6 +29,35 @@ from taskmaestro.task import Task, get_input_type, get_output_type
 
 class _JobTimeoutError(TaskTimeoutError):
     """A job deadline must abort even when mapped items collect failures."""
+
+
+@dataclass
+class _Deadline:
+    """Per-run timer state shared by the job and its tasks.
+
+    There is only one ``SIGALRM`` per process, so the job deadline is kept as an
+    absolute ``time.monotonic()`` timestamp and folded into every task or item
+    alarm.  Whichever deadline is nearer wins, and the job deadline is
+    re-checked before each unit of work so an inner alarm can never cancel it.
+    """
+
+    job_timeout: float | None = None
+    job_deadline: float | None = None
+    warned: bool = False
+    previous_handler: Any = field(default=None, repr=False)
+    handler_installed: bool = False
+
+    def remaining(self) -> float | None:
+        """Seconds left until the job deadline, or ``None`` if there is none."""
+        if self.job_deadline is None:
+            return None
+        return self.job_deadline - time.monotonic()
+
+    def check(self) -> None:
+        """Raise :class:`_JobTimeoutError` if the job deadline has passed."""
+        remaining = self.remaining()
+        if remaining is not None and remaining <= 0:
+            raise _JobTimeoutError(f"Job timed out after {self.job_timeout}s")
 
 
 class Runner:
@@ -55,10 +87,11 @@ class Runner:
         job.status = JobStatus.RUNNING
         job.started_at = datetime.now()
 
-        # Set up job-level timeout
-        job_alarm_set = False
+        # Job-level timeout is tracked as an absolute deadline and folded into
+        # every task/item alarm; see _Deadline.
+        deadline = _Deadline(job_timeout=timeout_seconds)
         if timeout_seconds is not None:
-            job_alarm_set = self._set_alarm(timeout_seconds, "Job", job_timeout=True)
+            deadline.job_deadline = time.monotonic() + timeout_seconds
 
         outputs: dict[str, BaseModel] = {}
         job_config = job.job_configuration
@@ -132,12 +165,11 @@ class Runner:
                 task_started = datetime.now()
                 self._emit(Event.TASK_START, job, task)
 
-                # Set up per-task timeout. Mapped tasks apply it per item.
-                task_alarm_set = False
-                if task_map is None and task.timeout_seconds is not None:
-                    task_alarm_set = self._set_alarm(task.timeout_seconds, task.name)
-
                 try:
+                    # Arming happens inside the guarded block so that an expired
+                    # job deadline or an unusable timer is recorded as a task
+                    # failure rather than escaping with the job left RUNNING.
+                    deadline.check()
                     if task_map is not None:
                         output = self._run_mapped_task(
                             job,
@@ -149,8 +181,10 @@ class Runner:
                             all_config_values,
                             outputs,
                             ctx,
+                            deadline,
                         )
                     else:
+                        self._arm(task.timeout_seconds, task.name, deadline)
                         output = task.run(task_input, ctx)
 
                         # Validate output matches declared type
@@ -193,11 +227,10 @@ class Runner:
                     self._emit(Event.JOB_FAIL, job)
                     return job
                 finally:
-                    if task_alarm_set:
-                        signal.alarm(0)
+                    self._disarm(deadline)
         finally:
-            if job_alarm_set:
-                signal.alarm(0)
+            self._disarm(deadline)
+            self._restore_handler(deadline)
 
         job.status = JobStatus.COMPLETED
         job.result = outputs[workflow.result_task_name]
@@ -216,6 +249,7 @@ class Runner:
         all_config_values: dict[str, Any],
         outputs: dict[str, BaseModel],
         ctx: ExecutionContext,
+        deadline: _Deadline,
     ) -> BaseModel:
         """Run all configured items for one mapped workflow node."""
         source = all_config_values[task_map.over]
@@ -236,12 +270,9 @@ class Runner:
             item_ctx = ctx.child(task_name=parent_task.name, item_key=key)
             item_started = datetime.now()
             self._emit(Event.MAP_ITEM_START, job, item_task, key)
-            alarm_set = False
-            if item_task.timeout_seconds is not None:
-                alarm_set = self._set_alarm(
-                    item_task.timeout_seconds, f"{parent_task.name}[{key}]"
-                )
             try:
+                deadline.check()
+                self._arm(item_task.timeout_seconds, f"{parent_task.name}[{key}]", deadline)
                 input_type = get_input_type(task_cls)
                 item_input = input_type.model_validate(item_input_values)
                 output = item_task.run(item_input, item_ctx)
@@ -279,8 +310,7 @@ class Runner:
                 if task_map.error_mode == "fail_fast":
                     raise MappedTaskExecutionError(parent_task.name, errors) from exc
             finally:
-                if alarm_set:
-                    signal.alarm(0)
+                self._disarm(deadline)
 
         if errors:
             raise MappedTaskExecutionError(parent_task.name, errors)
@@ -332,24 +362,88 @@ class Runner:
             key: self._resolve_output_ref(ref, outputs) for key, ref in collection.keyed_members
         }
 
-    def _set_alarm(self, seconds: float, label: str, *, job_timeout: bool = False) -> bool:
-        """Set a signal.alarm for timeout. Returns True if alarm was set."""
+    def _arm(self, task_timeout: float | None, label: str, deadline: _Deadline) -> None:
+        """Arm the timer for one unit of work.
+
+        The nearer of the task's own timeout and the remaining job time wins.
+        Raises :class:`_JobTimeoutError` immediately if the job deadline has
+        already passed.
+        """
+        remaining = deadline.remaining()
+        if remaining is not None and remaining <= 0:
+            raise _JobTimeoutError(f"Job timed out after {deadline.job_timeout}s")
+
+        if task_timeout is not None and (remaining is None or task_timeout <= remaining):
+            self._set_alarm(task_timeout, label, deadline=deadline)
+        elif remaining is not None:
+            self._set_alarm(remaining, "Job", deadline=deadline, job_timeout=True)
+
+    def _set_alarm(
+        self,
+        seconds: float,
+        label: str,
+        *,
+        deadline: _Deadline | None = None,
+        job_timeout: bool = False,
+    ) -> bool:
+        """Install a SIGALRM handler and start a one-shot timer.
+
+        Uses ``signal.setitimer`` for sub-second precision, falling back to
+        ``signal.alarm`` where unavailable.  Returns True if the timer was set.
+        On platforms or threads where signals cannot be used, a single warning
+        is issued per run and the timeout is not enforced.
+        """
+        if job_timeout and deadline is not None:
+            message = f"Job timed out after {deadline.job_timeout}s"
+        else:
+            message = f"{label} timed out after {seconds}s"
+        error_type: type[TaskTimeoutError] = _JobTimeoutError if job_timeout else TaskTimeoutError
+
+        def _handler(signum: int, frame: Any) -> None:
+            raise error_type(message)
+
         try:
-
-            def _handler(signum: int, frame: Any) -> None:
-                error_type = _JobTimeoutError if job_timeout else TaskTimeoutError
-                raise error_type(f"{label} timed out after {seconds}s")
-
-            signal.signal(signal.SIGALRM, _handler)
-            signal.alarm(int(seconds) if seconds >= 1 else 1)
+            previous = signal.signal(signal.SIGALRM, _handler)
+            if deadline is not None and not deadline.handler_installed:
+                deadline.previous_handler = previous
+                deadline.handler_installed = True
+            setitimer = getattr(signal, "setitimer", None)
+            if setitimer is not None:
+                setitimer(signal.ITIMER_REAL, max(seconds, 1e-6))
+            else:  # pragma: no cover - every SIGALRM platform has setitimer
+                signal.alarm(max(1, int(seconds + 0.999999)))
             return True
-        except (AttributeError, OSError):
-            warnings.warn(
-                f"signal.alarm not available on this platform; "
-                f"timeout for {label} will not be enforced",
-                stacklevel=2,
-            )
+        except (AttributeError, OSError, ValueError):
+            # ValueError: signal.signal() called outside the main thread.
+            if deadline is None or not deadline.warned:
+                if deadline is not None:
+                    deadline.warned = True
+                warnings.warn(
+                    f"signal.alarm not available on this platform or thread; "
+                    f"timeout for {label} will not be enforced",
+                    stacklevel=2,
+                )
             return False
+
+    @staticmethod
+    def _disarm(deadline: _Deadline) -> None:
+        """Cancel any pending timer without touching the handler."""
+        if not deadline.handler_installed:
+            return
+        setitimer = getattr(signal, "setitimer", None)
+        if setitimer is not None:
+            setitimer(signal.ITIMER_REAL, 0)
+        else:  # pragma: no cover
+            signal.alarm(0)
+
+    @staticmethod
+    def _restore_handler(deadline: _Deadline) -> None:
+        """Put back the SIGALRM handler that was installed before this run."""
+        if not deadline.handler_installed:
+            return
+        with suppress(AttributeError, OSError, ValueError, TypeError):  # pragma: no cover
+            signal.signal(signal.SIGALRM, deadline.previous_handler)
+        deadline.handler_installed = False
 
     def _emit(self, event: Event, *args: object) -> None:
         """Dispatch event to all hooks, swallowing any hook errors."""

@@ -723,7 +723,7 @@ class TestMappedExecution:
         )
         calls: list[tuple[float, str]] = []
 
-        def fake_alarm(seconds: float, label: str) -> bool:
+        def fake_alarm(seconds: float, label: str, **_kwargs: object) -> bool:
             calls.append((seconds, label))
             return True
 
