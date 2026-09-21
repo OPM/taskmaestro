@@ -83,6 +83,7 @@ class WorkflowSectionConfig(BaseModel):
 
     name: str
     result_task: str | None = None
+    input_mode: typing.Literal["auto", "flat", "per_task"] = "auto"
     tasks: list[TaskConfig] = Field(min_length=1)
 
 
@@ -186,6 +187,70 @@ class _Entry:
     cls: type[Task[Any, Any]]
     key: str  # import path or inner-workflow path as written in YAML
     registered_name: str
+
+
+def _decide_input_mode(
+    mode: typing.Literal["auto", "flat", "per_task"],
+    raw_input: dict[str, Any],
+    entries: list[_Entry],
+    *,
+    linear: bool,
+) -> bool:
+    """Return True when *raw_input* is per-task configuration.
+
+    See the comment at the call site for the three modes.  Raises
+    ConfigLoadError for an explicit ``per_task`` file with unknown keys or
+    non-mapping values, and for an ``auto`` file that reads validly both ways.
+    """
+    names = {entry.registered_name for entry in entries}
+
+    if mode == "flat":
+        return False
+
+    if mode == "per_task":
+        for key, value in raw_input.items():
+            if key not in names:
+                raise ConfigLoadError(
+                    f"input_mode is 'per_task' but top-level key '{key}' is not a task "
+                    f"name (known tasks: {sorted(names)})"
+                )
+            if value is not None and not isinstance(value, dict):
+                raise ConfigLoadError(
+                    f"input_mode is 'per_task' but the value for task '{key}' is not a "
+                    f"mapping (got {type(value).__name__})"
+                )
+        return True
+
+    # auto
+    looks_per_task = bool(raw_input) and all(
+        key in names and isinstance(raw_input[key], (dict, type(None))) for key in raw_input
+    )
+    if not looks_per_task:
+        return False
+
+    # The heuristic fired.  If the same mapping is also a valid input for the
+    # sole unconfigured root task, both readings are plausible: refuse to guess.
+    roots = [
+        entry
+        for index, entry in enumerate(entries)
+        if (entry.config.depends_on is None if not linear else index == 0)
+        and not entry.config.config_fields
+        and entry.config.map is None
+    ]
+    if len(roots) == 1:
+        try:
+            get_input_type(roots[0].cls).model_validate(raw_input)
+        except ValidationError:
+            pass
+        else:
+            raise ConfigLoadError(
+                f"Input file is ambiguous: its top-level keys {sorted(raw_input)} are task "
+                f"names, but the mapping is also a valid "
+                f"{get_input_type(roots[0].cls).__name__} for root task "
+                f"'{roots[0].registered_name}'. Set workflow.input_mode to 'flat' or "
+                f"'per_task'."
+            )
+    return True
 
 
 @dataclass(frozen=True)
@@ -367,13 +432,19 @@ def _load_workflow_only(
         tc.depends_on is not None or tc.map is not None for tc in config.workflow.tasks
     )
 
-    # 6b. Detect per-task config format early (before building workflow)
-    all_registered_names = {entry.registered_name for entry in entries}
+    # 6b. Decide how the input YAML is interpreted.
+    #
+    #   flat      — the mapping is the single unconfigured root task's input model
+    #   per_task  — top-level keys are task names, values are per-task config
+    #   auto      — infer; every key must name a task with a mapping/null value.
+    #               If the flat reading is *also* valid the file is ambiguous
+    #               and the user must set ``input_mode`` explicitly.
     entry_by_name = {entry.registered_name: entry for entry in entries}
-
-    is_per_task_config = bool(raw_input) and all(
-        key in all_registered_names and isinstance(raw_input[key], (dict, type(None)))
-        for key in raw_input
+    is_per_task_config = _decide_input_mode(
+        config.workflow.input_mode,
+        raw_input,
+        entries,
+        linear=not has_depends_on,
     )
 
     per_task_data: dict[str, dict[str, Any]] = {}
