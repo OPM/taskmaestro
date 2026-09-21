@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from taskmaestro.context import ExecutionContext
-from taskmaestro.exceptions import WorkflowDefinitionError
+from taskmaestro.exceptions import WorkflowDefinitionError, WorkflowTaskError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
 from taskmaestro.runner import Runner
 from taskmaestro.task import Task, get_input_type
@@ -39,6 +39,11 @@ def workflow_task(
         WorkflowDefinitionError: If the inner workflow does not have exactly one
             root task without config_fields (unless all roots are covered by
             job_configuration).
+
+    At run time, a failure inside the inner workflow surfaces as
+    :class:`~taskmaestro.exceptions.WorkflowTaskError`, which carries the
+    completed inner :class:`~taskmaestro.job.Job` and chains the original
+    exception as ``__cause__``.
     """
     # Find root tasks: tasks with deps=None and no config_fields
     roots: list[tuple[str, type[Task[Any, Any]]]] = []
@@ -86,10 +91,7 @@ def workflow_task(
             job = Job(workflow=inner_wf, config=cfg, job_configuration=inner_jc)
             result_job = Runner().run(job, ctx=ctx)
             if result_job.status == JobStatus.FAILED:
-                raise RuntimeError(
-                    f"Inner workflow '{inner_wf.name}' failed at task "
-                    f"'{result_job.failed_task}': {result_job.error}"
-                )
+                raise WorkflowTaskError(inner_wf.name, result_job) from result_job.exception
             return result_job.result
 
     _WorkflowTask.__name__ = f"WorkflowTask_{resolved_name}"

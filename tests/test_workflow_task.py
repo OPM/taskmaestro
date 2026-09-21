@@ -331,6 +331,57 @@ class TestErrorPropagation:
         assert "inner_failing" in result.error  # type: ignore[operator]
         assert "inner task broke" in result.error  # type: ignore[operator]
 
+    def test_inner_failure_is_workflow_task_error_with_chain(self) -> None:
+        """The outer job keeps a WorkflowTaskError carrying the inner Job and cause."""
+        from taskmaestro import TaskExecutionError, WorkflowTaskError
+
+        inner_wf = Workflow("failing_inner", tasks=[InnerFailing])
+        SubTask = workflow_task(inner_wf, name="fail_sub")
+        outer_wf = Workflow.builder("outer").add_task(SubTask).build()
+        job = Job(outer_wf, InnerInput(value=1))
+        result = Runner().run(job, ctx=ExecutionContext())
+
+        exc = result.exception
+        assert isinstance(exc, WorkflowTaskError)
+        assert isinstance(exc, TaskExecutionError)
+        assert exc.workflow_name == "failing_inner"
+        assert str(exc) == (
+            "Inner workflow 'failing_inner' failed at task 'inner_failing': inner task broke"
+        )
+
+        # Original exception is chained, not flattened to a string.
+        assert isinstance(exc.__cause__, ValueError)
+        assert str(exc.__cause__) == "inner task broke"
+
+        # The inner Job is preserved for post-mortem inspection.
+        inner = exc.inner_job
+        assert inner.status == JobStatus.FAILED
+        assert inner.failed_task == "inner_failing"
+        assert inner.exception is exc.__cause__
+        assert [(r.task_name, r.status.value) for r in inner.task_results] == [
+            ("inner_failing", "failed")
+        ]
+
+    def test_nested_failure_chains_through_two_levels(self) -> None:
+        """Errors from a doubly-nested workflow remain walkable via __cause__."""
+        from taskmaestro import WorkflowTaskError
+
+        leaf_wf = Workflow("leaf", tasks=[InnerFailing])
+        LeafTask = workflow_task(leaf_wf, name="leaf_task")
+        mid_wf = Workflow.builder("mid").add_task(LeafTask).build()
+        MidTask = workflow_task(mid_wf, name="mid_task")
+        outer_wf = Workflow.builder("outer").add_task(MidTask).build()
+
+        result = Runner().run(Job(outer_wf, InnerInput(value=1)), ctx=ExecutionContext())
+
+        outer_exc = result.exception
+        assert isinstance(outer_exc, WorkflowTaskError)
+        assert outer_exc.workflow_name == "mid"
+        mid_exc = outer_exc.__cause__
+        assert isinstance(mid_exc, WorkflowTaskError)
+        assert mid_exc.workflow_name == "leaf"
+        assert isinstance(mid_exc.__cause__, ValueError)
+
 
 # ============================================================
 # TestContextSharing

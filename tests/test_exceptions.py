@@ -37,6 +37,18 @@ class TestExceptionHierarchy:
     def test_task_timeout_error(self) -> None:
         assert issubclass(TaskTimeoutError, TaskExecutionError)
 
+    def test_workflow_task_error(self) -> None:
+        from types import SimpleNamespace
+
+        from taskmaestro.exceptions import WorkflowTaskError
+
+        assert issubclass(WorkflowTaskError, TaskExecutionError)
+        fake_job = SimpleNamespace(failed_task="step", error="kaboom")
+        exc = WorkflowTaskError("inner", fake_job)
+        assert exc.workflow_name == "inner"
+        assert exc.inner_job is fake_job
+        assert str(exc) == "Inner workflow 'inner' failed at task 'step': kaboom"
+
     def test_exception_messages(self) -> None:
         exc = CycleDetectedError("cycle found")
         assert str(exc) == "cycle found"

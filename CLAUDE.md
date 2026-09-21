@@ -33,7 +33,8 @@ mypy taskmaestro               # type check (strict mode)
 - **Type introspection**: Walk MRO via `__orig_bases__` + `typing.get_args()` to extract concrete `I`/`O` types
 - **Fan-in**: Downstream task input model fields mapped to upstream outputs via `model_fields` (Pydantic v2)
 - **Timeouts**: `signal.alarm` (Unix only, main thread); gracefully warns if unavailable
-- **Hook error swallowing**: `_emit()` wraps each hook call in try/except, reports via `warnings.warn()`
+- **Hook error swallowing**: `_emit()` wraps each hook call in try/except, reports via `warnings.warn(..., HookError, source=exc)` — message includes `repr(exc)`; `HookError` subclasses `UserWarning` so it can be filtered or escalated
+- **Inner-workflow failures**: `workflow_task` raises `WorkflowTaskError` (a `TaskExecutionError`) carrying `inner_job` and chaining the original exception via `__cause__`; `Job.exception` keeps the raw exception alongside `Job.error`
 - **Validation order**: unique names → acyclic (DFS) → type chain → result task detection
 
 ## Testing Conventions
