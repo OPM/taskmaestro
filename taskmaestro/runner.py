@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.exceptions import (
     JobStateError,
     TaskOutputTypeError,
@@ -95,7 +96,9 @@ class Runner:
                     input_type = get_input_type(task_cls)
                     field_values: dict[str, object] = {}
                     for fname, upstream_ref in deps.items():
-                        if isinstance(upstream_ref, tuple):
+                        if isinstance(upstream_ref, CollectionRef):
+                            field_values[fname] = self._resolve_collection(upstream_ref, outputs)
+                        elif isinstance(upstream_ref, tuple):
                             up_name, up_field = upstream_ref
                             field_values[fname] = getattr(outputs[up_name], up_field)
                         else:
@@ -169,7 +172,32 @@ class Runner:
         self._emit(Event.JOB_COMPLETE, job)
         return job
 
-    def _set_alarm(self, seconds: float, label: str) -> bool:
+    @staticmethod
+    def _resolve_output_ref(
+        ref: OutputRef,
+        outputs: dict[str, BaseModel],
+    ) -> object:
+        """Resolve one task output or output field from completed outputs."""
+        output = outputs[ref.task_name]
+        if ref.output_field is None:
+            return output
+        return getattr(output, ref.output_field)
+
+    def _resolve_collection(
+        self,
+        collection: CollectionRef,
+        outputs: dict[str, BaseModel],
+    ) -> object:
+        """Resolve a collection while preserving its declaration order."""
+        if collection.kind == "positional":
+            return [
+                self._resolve_output_ref(ref, outputs) for ref in collection.positional_members
+            ]
+        return {
+            key: self._resolve_output_ref(ref, outputs) for key, ref in collection.keyed_members
+        }
+
+    def _set_alarm(self, seconds: float, label: str, *, job_timeout: bool = False) -> bool:
         """Set a signal.alarm for timeout. Returns True if alarm was set."""
         try:
 

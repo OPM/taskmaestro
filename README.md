@@ -110,7 +110,7 @@ You define **Tasks** (typed units of work), compose them into a **Workflow** (li
 | Concept | Description |
 |---|---|
 | **Task** | Subclass `Task[I, O]` with Pydantic models for input and output, then implement `run(input, ctx)`. Each task can declare an optional `timeout_seconds`. For tasks with multiple named outputs, use inline `Inputs`/`Outputs` classes inside the task body. |
-| **Workflow** | Build a linear pipeline with `Workflow(tasks=[...])` or a DAG with `Workflow.builder()`. The builder accepts `depends_on` for single dependencies, fan-in dicts (`{"field": UpstreamTask}`), and `(Task, "field")` tuples for output field routing. Use `config_fields` to declare which input fields come from `JobConfiguration`. Workflows are validated at build time for cycles, type compatibility, and input completeness. |
+| **Workflow** | Build a linear pipeline with `Workflow(tasks=[...])` or a DAG with `Workflow.builder()`. The builder accepts `depends_on` for single dependencies, fan-in dicts (`{"field": UpstreamTask}`), `(Task, "field")` tuples for output field routing, and `collect()` for gathering outputs into `list[T]` or `dict[str, T]` fields. Use `config_fields` to declare which input fields come from `JobConfiguration`. Workflows are validated at build time for cycles, type compatibility, and input completeness. |
 | **Job** | Binds a Workflow to a typed config (the root task's input). Tracks `status` (`pending` → `running` → `completed`/`failed`), the final `result`, any `error`, and per-task `task_results`. Optionally accepts a `JobConfiguration` for per-task static config values. A job can only be run once. |
 | **Runner** | Executes tasks in topological order, stopping on the first failure (fail-fast). Supports per-task and per-job timeouts via `signal.alarm` (Unix only). Dispatches lifecycle events to registered hooks. |
 | **ExecutionContext** | Passed to every `run()` call. Provides a `logger`, an auto-generated `correlation_id` (UUID), a `scratch_dir` (temporary directory), and a service registry (`register()`/`resolve()`) for injecting shared resources like DB connections. |
@@ -230,6 +230,65 @@ workflow = (
     .build()
 )
 ```
+
+## Collecting Multiple Outputs
+
+Use `collect()` when several task outputs should populate one `list[T]` or
+`dict[str, T]` field. Positional members preserve declaration order:
+
+```python
+from taskmaestro import collect
+
+class GridInput(BaseModel):
+    surfaces: list[Surface]
+
+workflow = (
+    Workflow.builder("create_grid")
+    .add_task(LoadSurface, name="top")
+    .add_task(GenerateSurface, name="middle")
+    .add_task(LoadSurface, name="base")
+    .add_task(
+        CreateGrid,
+        depends_on={"surfaces": collect("top", "middle", "base")},
+    )
+    .build()
+)
+```
+
+Use a mapping to preserve aliases in a `dict[str, T]`, and use `(task, "field")`
+to collect a specific output field:
+
+```python
+depends_on={
+    "surfaces": collect({
+        "top": ("top_loader", "surface"),
+        "base": ("base_loader", "surface"),
+    })
+}
+```
+
+The equivalent YAML forms are:
+
+```yaml
+depends_on:
+  surfaces:
+    collect:
+      - top
+      - [middle, generated_surface]
+      - base
+```
+
+```yaml
+depends_on:
+  surfaces:
+    collect:
+      top: [top_loader, surface]
+      base: [base_loader, surface]
+```
+
+Every member is checked against the field's element type when the workflow is
+built. Subtypes are accepted. `collect()` and `collect({})` explicitly create
+empty list and dictionary inputs, respectively.
 
 ## ObjectModel
 

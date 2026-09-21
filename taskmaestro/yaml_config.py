@@ -12,6 +12,7 @@ import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
 from taskmaestro.discovery import get_registered_task, registered_task_names
 from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
 from taskmaestro.hooks.base import BaseHook
@@ -83,6 +84,42 @@ class YamlWorkflowConfig(BaseModel):
 
 
 # --- Utilities ---
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects duplicate mapping keys."""
+
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        self._checked_mappings: set[yaml.nodes.MappingNode] = set()
+
+    def flatten_mapping(self, node: yaml.nodes.MappingNode) -> None:
+        # Check declarations before merges add inherited keys. Anchors can reuse
+        # already-flattened nodes, whose override keys are legitimately repeated.
+        if node in self._checked_mappings:
+            return
+        self._checked_mappings.add(node)
+        keys: set[Any] = set()
+        for key_node, _value_node in node.value:
+            key = (
+                "<<"
+                if key_node.tag == "tag:yaml.org,2002:merge"
+                else self.construct_object(key_node)
+            )
+            if key in keys:
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            keys.add(key)
+        super().flatten_mapping(node)
+
+
+def _yaml_load(text: str) -> Any:
+    """Safely parse YAML while rejecting duplicate mapping keys."""
+    return yaml.load(text, Loader=_UniqueKeyLoader)
 
 
 def import_class(dotted_path: str) -> type[Any]:
@@ -165,7 +202,7 @@ def _load_workflow_only(
 
     # 1. Parse workflow YAML
     try:
-        raw = yaml.safe_load(workflow_path.read_text())
+        raw = _yaml_load(workflow_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -178,7 +215,7 @@ def _load_workflow_only(
     raw_input: dict[str, Any] = {}
     if input_path is not None:
         try:
-            raw_input = yaml.safe_load(input_path.read_text())
+            raw_input = _yaml_load(input_path.read_text())
         except yaml.YAMLError as exc:
             raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
         except OSError as exc:
@@ -240,6 +277,41 @@ def _load_workflow_only(
         if dep_str in name_lookup:
             return name_lookup[dep_str]
         raise ConfigLoadError(f"Dependency '{dep_str}' for task '{context_task}' not found")
+
+    def _resolve_yaml_output_ref(raw_ref: Any, context_task: str) -> OutputReference:
+        """Resolve a YAML task or ``[task, field]`` output reference."""
+        if isinstance(raw_ref, str):
+            return _resolve_yaml_dep(raw_ref, context_task)
+        if isinstance(raw_ref, list):
+            if len(raw_ref) != 2 or not all(isinstance(item, str) for item in raw_ref):
+                raise ConfigLoadError(
+                    f"Collection member must be a task name or [task, field], "
+                    f"got {raw_ref!r} for task '{context_task}'"
+                )
+            return (_resolve_yaml_dep(raw_ref[0], context_task), raw_ref[1])
+        raise ConfigLoadError(
+            f"Collection member must be a task name or [task, field], "
+            f"got {raw_ref!r} for task '{context_task}'"
+        )
+
+    def _resolve_yaml_collection(raw_collection: Any, context_task: str) -> CollectionDependency:
+        """Resolve a YAML collect list or mapping."""
+        if isinstance(raw_collection, list):
+            return collect(
+                *(_resolve_yaml_output_ref(member, context_task) for member in raw_collection)
+            )
+        if isinstance(raw_collection, dict):
+            if not all(isinstance(key, str) for key in raw_collection):
+                raise ConfigLoadError(f"Collection keys must be strings for task '{context_task}'")
+            return collect(
+                {
+                    key: _resolve_yaml_output_ref(member, context_task)
+                    for key, member in raw_collection.items()
+                }
+            )
+        raise ConfigLoadError(
+            f"'collect' must contain a list or mapping for task '{context_task}'"
+        )
 
     # 6. Detect linear vs DAG mode
     has_depends_on = any(tc.depends_on is not None for tc in config.workflow.tasks)
@@ -324,10 +396,16 @@ def _load_workflow_only(
                 )
             elif isinstance(deps, dict):
                 fan_in: dict[
-                    str, type[Task[Any, Any]] | str | tuple[type[Task[Any, Any]] | str, str]
+                    str,
+                    type[Task[Any, Any]]
+                    | str
+                    | tuple[type[Task[Any, Any]] | str, str]
+                    | CollectionDependency,
                 ] = {}
                 for field_name, upstream_ref in deps.items():
-                    if isinstance(upstream_ref, list):
+                    if isinstance(upstream_ref, dict) and set(upstream_ref) == {"collect"}:
+                        fan_in[field_name] = _resolve_yaml_collection(upstream_ref["collect"], key)
+                    elif isinstance(upstream_ref, list):
                         if len(upstream_ref) != 2 or not all(
                             isinstance(e, str) for e in upstream_ref
                         ):
@@ -339,9 +417,14 @@ def _load_workflow_only(
                         up_path, up_field = upstream_ref
                         resolved_dep = _resolve_yaml_dep(up_path, key)
                         fan_in[field_name] = (resolved_dep, up_field)
-                    else:
+                    elif isinstance(upstream_ref, str):
                         resolved_dep = _resolve_yaml_dep(upstream_ref, key)
                         fan_in[field_name] = resolved_dep
+                    else:
+                        raise ConfigLoadError(
+                            f"Invalid dependency {upstream_ref!r} for field "
+                            f"'{field_name}' on task '{key}'"
+                        )
                 builder.add_task(
                     cls, name=instance_name, depends_on=fan_in, config_fields=cfg_fields
                 )
@@ -371,7 +454,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 1. Parse workflow YAML (needed for runner/context config)
     try:
-        raw = yaml.safe_load(workflow_path.read_text())
+        raw = _yaml_load(workflow_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -382,7 +465,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
 
     # 2. Parse input YAML
     try:
-        raw_input = yaml.safe_load(input_path.read_text())
+        raw_input = _yaml_load(input_path.read_text())
     except yaml.YAMLError as exc:
         raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
     except OSError as exc:
@@ -411,17 +494,24 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
             for task_name, deps in workflow._dependencies.items()
             if deps is None and not workflow.get_config_fields(task_name)
         ]
-        assert root_task_classes, (
-            "job_configuration is None yet no roots found without config_fields"
-        )
+        if not root_task_classes and all(
+            deps is not None for deps in workflow._dependencies.values()
+        ):
+            # The workflow is self-contained, for example a task fed only by
+            # explicitly empty collection dependencies.
+            job = Job(workflow, EmptyConfig())
+        elif not root_task_classes:
+            raise ConfigLoadError(
+                "Workflow has configured root tasks but no per-task input configuration"
+            )
+        else:
+            input_type = get_input_type(root_task_classes[0])
+            try:
+                validated_input = input_type.model_validate(raw_input)
+            except ValidationError as exc:
+                raise ConfigLoadError(f"Input validation error: {exc}") from exc
 
-        input_type = get_input_type(root_task_classes[0])
-        try:
-            validated_input = input_type.model_validate(raw_input)
-        except ValidationError as exc:
-            raise ConfigLoadError(f"Input validation error: {exc}") from exc
-
-        job = Job(workflow, validated_input)
+            job = Job(workflow, validated_input)
 
     # 6. Instantiate hooks
     hooks: list[BaseHook] = []

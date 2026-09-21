@@ -3,6 +3,7 @@
 __version__ = "0.2.0"
 
 from taskmaestro.context import ExecutionContext
+from taskmaestro.dependencies import collect
 from taskmaestro.discovery import (
     TASK_ENTRY_POINT_GROUP,
     WORKFLOW_ENTRY_POINT_GROUP,
@@ -64,6 +65,7 @@ __all__ = [
     "WorkflowBuilder",
     "WorkflowDefinitionError",
     "WorkflowRunnerError",
+    "collect",
     "get_registered_task",
     "get_registered_workflow",
     "load_workflow_from_yaml",
