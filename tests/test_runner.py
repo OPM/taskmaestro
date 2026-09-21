@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from taskmaestro import (
     EmptyConfig,
@@ -409,6 +409,26 @@ class TestConfigFieldsExecution:
         assert result.status == JobStatus.COMPLETED
         # AddOne: 3+1=4, FanInWithConfig: "hello:4"
         assert result.result.combined == "hello:4"  # type: ignore[union-attr]
+
+    def test_extra_config_values_reach_input_model(self, ctx: ExecutionContext) -> None:
+        """Configured values are passed through to the input model even when they
+        are not listed in config_fields, so the model decides how to treat them."""
+
+        class StrictInput(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            path: str
+
+        class StrictTask(Task[StrictInput, NumberOutput]):
+            name = "strict_task"
+
+            def run(self, input: StrictInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=len(input.path))
+
+        wf = Workflow.builder("strict").add_task(StrictTask, config_fields=["path"]).build()
+        jc = JobConfiguration({"strict_task": {"path": "/data", "unexpected": 1}})
+        job = Job(wf, EmptyConfig(), job_configuration=jc)
+        with pytest.raises(ValidationError, match="unexpected"):
+            Runner().run(job, ctx=ctx)
 
     def test_backward_compat_no_config(self, ctx: ExecutionContext) -> None:
         """Workflow without config_fields runs normally."""

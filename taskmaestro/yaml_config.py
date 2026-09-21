@@ -17,11 +17,21 @@ from taskmaestro.discovery import get_registered_task, registered_task_names
 from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
 from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
+from taskmaestro.mapping import TaskMap
 from taskmaestro.runner import Runner
 from taskmaestro.task import Task, get_input_type
 from taskmaestro.workflow import Workflow, WorkflowBuilder
 
 # --- Pydantic schema models for YAML validation ---
+
+
+class TaskMapConfig(BaseModel):
+    """Mapped execution settings for a YAML task entry."""
+
+    over: str
+    key_as: str
+    value_as: str
+    error_mode: typing.Literal["fail_fast", "collect_all"] = "fail_fast"
 
 
 class TaskConfig(BaseModel):
@@ -33,6 +43,7 @@ class TaskConfig(BaseModel):
     name: str | None = None
     depends_on: str | list[str] | dict[str, Any] | None = None
     config_fields: list[str] | None = None
+    map: TaskMapConfig | None = None
 
     @model_validator(mode="after")
     def _check_task_or_workflow(self) -> TaskConfig:
@@ -314,7 +325,9 @@ def _load_workflow_only(
         )
 
     # 6. Detect linear vs DAG mode
-    has_depends_on = any(tc.depends_on is not None for tc in config.workflow.tasks)
+    has_depends_on = any(
+        tc.depends_on is not None or tc.map is not None for tc in config.workflow.tasks
+    )
 
     # 6b. Detect per-task config format early (before building workflow)
     all_registered_names: set[str] = set()
@@ -334,7 +347,15 @@ def _load_workflow_only(
         for task_name, task_values in raw_input.items():
             per_task_data[task_name] = dict(task_values) if task_values else {}
             if task_values:
-                per_task_cfg_fields[task_name] = list(task_values.keys())
+                task_config = next(
+                    tc
+                    for tc in config.workflow.tasks
+                    if (tc.name or task_classes[_task_key(tc)].name) == task_name
+                )
+                map_source = task_config.map.over if task_config.map is not None else None
+                per_task_cfg_fields[task_name] = [
+                    field_name for field_name in task_values if field_name != map_source
+                ]
 
     # 7. Resolve result_task
     result_task_name: str | None = None
@@ -373,12 +394,24 @@ def _load_workflow_only(
             registered_name = name_lookup[key]
             instance_name = task_config.name
             cfg_fields = task_config.config_fields or per_task_cfg_fields.get(registered_name)
+            mapped_over = (
+                TaskMap(**task_config.map.model_dump()) if task_config.map is not None else None
+            )
             if deps is None:
-                builder.add_task(cls, name=instance_name, config_fields=cfg_fields)
+                builder.add_task(
+                    cls,
+                    name=instance_name,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
+                )
             elif isinstance(deps, str):
                 resolved_dep = _resolve_yaml_dep(deps, key)
                 builder.add_task(
-                    cls, name=instance_name, depends_on=resolved_dep, config_fields=cfg_fields
+                    cls,
+                    name=instance_name,
+                    depends_on=resolved_dep,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
             elif isinstance(deps, list):
                 if len(deps) != 2 or not all(isinstance(e, str) for e in deps):
@@ -393,6 +426,7 @@ def _load_workflow_only(
                     name=instance_name,
                     depends_on=(resolved_dep, field_name),
                     config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
             elif isinstance(deps, dict):
                 fan_in: dict[
@@ -426,7 +460,11 @@ def _load_workflow_only(
                             f"'{field_name}' on task '{key}'"
                         )
                 builder.add_task(
-                    cls, name=instance_name, depends_on=fan_in, config_fields=cfg_fields
+                    cls,
+                    name=instance_name,
+                    depends_on=fan_in,
+                    config_fields=cfg_fields,
+                    mapped_over=mapped_over,
                 )
         try:
             workflow = builder.build()
