@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from pydantic import BaseModel
 
@@ -21,4 +22,13 @@ class ResultPersistenceHook(BaseHook):
     def on_task_complete(self, job: Job[Any], task: Task[Any, Any], output: BaseModel) -> None:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         output_path = self.output_dir / f"{task.name}.json"
+        output_path.write_text(output.model_dump_json(indent=2))
+
+    def on_map_item_complete(
+        self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+    ) -> None:
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        # Escape '%' too, so distinct keys cannot collapse onto the same filename.
+        safe_key = quote(key, safe="")
+        output_path = self.output_dir / f"{task.name}[{safe_key}].json"
         output_path.write_text(output.model_dump_json(indent=2))

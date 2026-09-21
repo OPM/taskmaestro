@@ -19,7 +19,9 @@ class TimingHook(BaseHook):
         self.job_duration: float | None = None
         self.task_timings: dict[str, float] = {}
         self._job_start: float | None = None
+        self.mapped_item_timings: dict[str, dict[str, float]] = {}
         self._task_starts: dict[str, float] = {}
+        self._map_item_starts: dict[tuple[str, str], float] = {}
 
     def on_job_start(self, job: Job[Any]) -> None:
         self._job_start = time.monotonic()
@@ -44,3 +46,21 @@ class TimingHook(BaseHook):
         start = self._task_starts.get(task.name)
         if start is not None:
             self.task_timings[task.name] = time.monotonic() - start
+
+    def on_map_item_start(self, job: Job[Any], task: Task[Any, Any], key: str) -> None:
+        self._map_item_starts[(task.name, key)] = time.monotonic()
+
+    def on_map_item_complete(
+        self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+    ) -> None:
+        self._record_map_item(task.name, key)
+
+    def on_map_item_fail(
+        self, job: Job[Any], task: Task[Any, Any], key: str, error: Exception
+    ) -> None:
+        self._record_map_item(task.name, key)
+
+    def _record_map_item(self, task_name: str, key: str) -> None:
+        start = self._map_item_starts.get((task_name, key))
+        if start is not None:
+            self.mapped_item_timings.setdefault(task_name, {})[key] = time.monotonic() - start

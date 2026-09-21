@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import signal
 import warnings
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -13,12 +14,18 @@ from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.exceptions import (
     JobStateError,
+    MappedTaskExecutionError,
     TaskOutputTypeError,
     TaskTimeoutError,
 )
 from taskmaestro.hooks.base import BaseHook, Event
 from taskmaestro.job import Job, JobStatus, TaskResult, TaskStatus
-from taskmaestro.task import get_input_type, get_output_type
+from taskmaestro.mapping import MappedOutput, TaskMap
+from taskmaestro.task import Task, get_input_type, get_output_type
+
+
+class _JobTimeoutError(TaskTimeoutError):
+    """A job deadline must abort even when mapped items collect failures."""
 
 
 class Runner:
@@ -51,7 +58,7 @@ class Runner:
         # Set up job-level timeout
         job_alarm_set = False
         if timeout_seconds is not None:
-            job_alarm_set = self._set_alarm(timeout_seconds, "Job")
+            job_alarm_set = self._set_alarm(timeout_seconds, "Job", job_timeout=True)
 
         outputs: dict[str, BaseModel] = {}
         job_config = job.job_configuration
@@ -62,14 +69,25 @@ class Runner:
                 task.name = task_name  # instance-level override for named instances
                 deps = workflow.get_dependencies(task_name)
                 config_fields = workflow.get_config_fields(task_name)
-                config_values = (
+                task_map = workflow.get_task_map(task_name)
+                all_config_values = (
                     job_config.get_config_for_task(task_name)
-                    if job_config and config_fields
+                    if job_config and (config_fields or task_map is not None)
                     else {}
                 )
+                # Mapped tasks consume the map source themselves; every other
+                # configured value is passed through to the input model as before.
+                config_values = {
+                    key: value
+                    for key, value in all_config_values.items()
+                    if task_map is None or key != task_map.over
+                }
 
-                # Assemble input based on dependency type
-                if deps is None:
+                # Assemble input based on dependency type. Mapped tasks build
+                # one validated input per configured item below.
+                if task_map is not None:
+                    task_input: Any = None
+                elif deps is None:
                     if config_values:
                         # Root task with config: build input from config values
                         input_type = get_input_type(task_cls)
@@ -80,7 +98,9 @@ class Runner:
                     if config_values:
                         # Single dep with config: decompose upstream, merge with config
                         input_type = get_input_type(task_cls)
-                        upstream_data = outputs[deps].model_dump()
+                        upstream_output = outputs[deps]
+                        assert isinstance(upstream_output, BaseModel)
+                        upstream_data = upstream_output.model_dump()
                         down_fields = input_type.model_fields
                         merged: dict[str, object] = {
                             k: v for k, v in upstream_data.items() if k in down_fields
@@ -112,21 +132,34 @@ class Runner:
                 task_started = datetime.now()
                 self._emit(Event.TASK_START, job, task)
 
-                # Set up per-task timeout
+                # Set up per-task timeout. Mapped tasks apply it per item.
                 task_alarm_set = False
-                if task.timeout_seconds is not None:
+                if task_map is None and task.timeout_seconds is not None:
                     task_alarm_set = self._set_alarm(task.timeout_seconds, task.name)
 
                 try:
-                    output = task.run(task_input, ctx)
-
-                    # Validate output matches declared type
-                    expected_output_type = get_output_type(task_cls)
-                    if not isinstance(output, expected_output_type):
-                        raise TaskOutputTypeError(
-                            f"Task '{task.name}' returned {type(output).__name__}, "
-                            f"expected {expected_output_type.__name__}"
+                    if task_map is not None:
+                        output = self._run_mapped_task(
+                            job,
+                            task_cls,
+                            task,
+                            task_map,
+                            deps,
+                            config_values,
+                            all_config_values,
+                            outputs,
+                            ctx,
                         )
+                    else:
+                        output = task.run(task_input, ctx)
+
+                        # Validate output matches declared type
+                        expected_output_type = get_output_type(task_cls)
+                        if not isinstance(output, expected_output_type):
+                            raise TaskOutputTypeError(
+                                f"Task '{task.name}' returned {type(output).__name__}, "
+                                f"expected {expected_output_type.__name__}"
+                            )
 
                     duration = (datetime.now() - task_started).total_seconds()
                     outputs[task.name] = output
@@ -172,6 +205,108 @@ class Runner:
         self._emit(Event.JOB_COMPLETE, job)
         return job
 
+    def _run_mapped_task(
+        self,
+        job: Job[Any],
+        task_cls: type[Task[Any, Any]],
+        parent_task: Task[Any, Any],
+        task_map: TaskMap,
+        deps: Any,
+        config_values: dict[str, Any],
+        all_config_values: dict[str, Any],
+        outputs: dict[str, BaseModel],
+        ctx: ExecutionContext,
+    ) -> BaseModel:
+        """Run all configured items for one mapped workflow node."""
+        source = all_config_values[task_map.over]
+        assert isinstance(source, Mapping)  # validated when the Job was created
+        shared_values = self._mapped_shared_values(deps, config_values, outputs)
+        expected_output_type = get_output_type(task_cls)
+        collected: dict[str, BaseModel] = {}
+        errors: dict[str, Exception] = {}
+        item_results = job.mapped_item_results.setdefault(parent_task.name, [])
+
+        for key, value in source.items():
+            assert isinstance(key, str)  # validated when the Job was created
+            item_task = task_cls()
+            item_task.name = parent_task.name
+            item_input_values = dict(shared_values)
+            item_input_values[task_map.key_as] = key
+            item_input_values[task_map.value_as] = value
+            item_ctx = ctx.child(task_name=parent_task.name, item_key=key)
+            item_started = datetime.now()
+            self._emit(Event.MAP_ITEM_START, job, item_task, key)
+            alarm_set = False
+            if item_task.timeout_seconds is not None:
+                alarm_set = self._set_alarm(
+                    item_task.timeout_seconds, f"{parent_task.name}[{key}]"
+                )
+            try:
+                input_type = get_input_type(task_cls)
+                item_input = input_type.model_validate(item_input_values)
+                output = item_task.run(item_input, item_ctx)
+                if not isinstance(output, expected_output_type):
+                    raise TaskOutputTypeError(
+                        f"Task '{parent_task.name}[{key}]' returned "
+                        f"{type(output).__name__}, expected {expected_output_type.__name__}"
+                    )
+                collected[key] = output
+                item_results.append(
+                    TaskResult(
+                        task_name=f"{parent_task.name}[{key}]",
+                        status=TaskStatus.COMPLETED,
+                        output=output,
+                        started_at=item_started,
+                        duration_seconds=(datetime.now() - item_started).total_seconds(),
+                    )
+                )
+                self._emit(Event.MAP_ITEM_COMPLETE, job, item_task, key, output)
+            except Exception as exc:
+                errors[key] = exc
+                item_results.append(
+                    TaskResult(
+                        task_name=f"{parent_task.name}[{key}]",
+                        status=TaskStatus.FAILED,
+                        output=None,
+                        started_at=item_started,
+                        duration_seconds=(datetime.now() - item_started).total_seconds(),
+                        error=str(exc),
+                    )
+                )
+                self._emit(Event.MAP_ITEM_FAIL, job, item_task, key, exc)
+                if isinstance(exc, _JobTimeoutError):
+                    raise
+                if task_map.error_mode == "fail_fast":
+                    raise MappedTaskExecutionError(parent_task.name, errors) from exc
+            finally:
+                if alarm_set:
+                    signal.alarm(0)
+
+        if errors:
+            raise MappedTaskExecutionError(parent_task.name, errors)
+        mapped_output_type = MappedOutput[expected_output_type]  # type: ignore[valid-type]
+        return mapped_output_type(root=collected)
+
+    def _mapped_shared_values(
+        self,
+        deps: Any,
+        config_values: dict[str, Any],
+        outputs: dict[str, BaseModel],
+    ) -> dict[str, object]:
+        """Resolve fields shared by every invocation of a mapped task."""
+        values: dict[str, object] = {}
+        if isinstance(deps, dict):
+            for field_name, ref in deps.items():
+                if isinstance(ref, CollectionRef):
+                    values[field_name] = self._resolve_collection(ref, outputs)
+                elif isinstance(ref, tuple):
+                    upstream_name, output_field = ref
+                    values[field_name] = getattr(outputs[upstream_name], output_field)
+                else:
+                    values[field_name] = outputs[ref]
+        values.update(config_values)
+        return values
+
     @staticmethod
     def _resolve_output_ref(
         ref: OutputRef,
@@ -202,7 +337,8 @@ class Runner:
         try:
 
             def _handler(signum: int, frame: Any) -> None:
-                raise TaskTimeoutError(f"{label} timed out after {seconds}s")
+                error_type = _JobTimeoutError if job_timeout else TaskTimeoutError
+                raise error_type(f"{label} timed out after {seconds}s")
 
             signal.signal(signal.SIGALRM, _handler)
             signal.alarm(int(seconds) if seconds >= 1 else 1)

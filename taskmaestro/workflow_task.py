@@ -8,7 +8,7 @@ from taskmaestro.context import ExecutionContext
 from taskmaestro.exceptions import WorkflowDefinitionError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
 from taskmaestro.runner import Runner
-from taskmaestro.task import Task, get_input_type, get_output_type
+from taskmaestro.task import Task, get_input_type
 from taskmaestro.workflow import Workflow
 
 
@@ -45,7 +45,7 @@ def workflow_task(
     for task_name, deps in workflow._dependencies.items():
         if deps is None:
             config_fields = workflow.get_config_fields(task_name)
-            if not config_fields:
+            if not config_fields and not workflow.is_mapped_task(task_name):
                 roots.append((task_name, workflow._tasks[task_name]))
 
     all_roots_configured = False
@@ -70,8 +70,7 @@ def workflow_task(
     else:
         input_type = get_input_type(roots[0][1])
 
-    result_task_cls = workflow.result_task
-    output_type = get_output_type(result_task_cls)
+    output_type = workflow.get_output_annotation(workflow.result_task_name)
 
     resolved_name = name if name is not None else workflow.name
     inner_wf = workflow

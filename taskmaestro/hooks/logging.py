@@ -42,3 +42,16 @@ class LoggingHook(BaseHook):
 
     def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
         self._logger.log(self._level, "Task failed: %s, error=%s", task.name, error)
+
+    def on_map_item_start(self, job: Job[Any], task: Task[Any, Any], key: str) -> None:
+        self._logger.log(self._level, "Map item started: %s[%s]", task.name, key)
+
+    def on_map_item_complete(
+        self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+    ) -> None:
+        self._logger.log(self._level, "Map item completed: %s[%s]", task.name, key)
+
+    def on_map_item_fail(
+        self, job: Job[Any], task: Task[Any, Any], key: str, error: Exception
+    ) -> None:
+        self._logger.log(self._level, "Map item failed: %s[%s], error=%s", task.name, key, error)

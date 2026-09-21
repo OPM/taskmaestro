@@ -19,6 +19,7 @@ from taskmaestro.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
     JobStateError,
+    MappedTaskExecutionError,
     PluginLoadError,
     TaskExecutionError,
     TaskOutputTypeError,
@@ -27,6 +28,7 @@ from taskmaestro.exceptions import (
     WorkflowRunnerError,
 )
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
+from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.object_model import ObjectModel
 from taskmaestro.runner import Runner
 from taskmaestro.task import Task
@@ -52,11 +54,14 @@ __all__ = [
     "JobStateError",
     "JobStatus",
     "LoadedWorkflow",
+    "MappedOutput",
+    "MappedTaskExecutionError",
     "ObjectModel",
     "PluginLoadError",
     "Runner",
     "Task",
     "TaskExecutionError",
+    "TaskMap",
     "TaskOutputTypeError",
     "TaskResult",
     "TaskStatus",

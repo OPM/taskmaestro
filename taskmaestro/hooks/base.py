@@ -21,6 +21,9 @@ class Event(StrEnum):
     TASK_START = "task_start"
     TASK_COMPLETE = "task_complete"
     TASK_FAIL = "task_fail"
+    MAP_ITEM_START = "map_item_start"
+    MAP_ITEM_COMPLETE = "map_item_complete"
+    MAP_ITEM_FAIL = "map_item_fail"
 
 
 @runtime_checkable
@@ -33,6 +36,13 @@ class Hook(Protocol):
     def on_task_start(self, job: Job[Any], task: Task[Any, Any]) -> None: ...
     def on_task_complete(self, job: Job[Any], task: Task[Any, Any], output: BaseModel) -> None: ...
     def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None: ...
+    def on_map_item_start(self, job: Job[Any], task: Task[Any, Any], key: str) -> None: ...
+    def on_map_item_complete(
+        self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+    ) -> None: ...
+    def on_map_item_fail(
+        self, job: Job[Any], task: Task[Any, Any], key: str, error: Exception
+    ) -> None: ...
 
 
 class BaseHook:
@@ -54,4 +64,17 @@ class BaseHook:
         pass
 
     def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
+        pass
+
+    def on_map_item_start(self, job: Job[Any], task: Task[Any, Any], key: str) -> None:
+        pass
+
+    def on_map_item_complete(
+        self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+    ) -> None:
+        pass
+
+    def on_map_item_fail(
+        self, job: Job[Any], task: Task[Any, Any], key: str, error: Exception
+    ) -> None:
         pass

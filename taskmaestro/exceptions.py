@@ -25,6 +25,16 @@ class TaskExecutionError(WorkflowRunnerError):
     """Raised during task execution."""
 
 
+class MappedTaskExecutionError(TaskExecutionError):
+    """One or more invocations of a mapped task failed."""
+
+    def __init__(self, task_name: str, errors: dict[str, Exception]) -> None:
+        self.task_name = task_name
+        self.errors = errors
+        details = "; ".join(f"{key}: {error}" for key, error in errors.items())
+        super().__init__(f"Mapped task '{task_name}' failed: {details}")
+
+
 class TaskOutputTypeError(TaskExecutionError):
     """Task returned an output whose type doesn't match the declared output type."""
 
