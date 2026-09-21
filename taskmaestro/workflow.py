@@ -54,20 +54,80 @@ def _extract_upstream_names(deps: StoredDeps) -> set[str]:
     return names
 
 
+def _is_union(annotation: Any) -> bool:
+    """Return whether *annotation* is either spelling of a union."""
+    return get_origin(annotation) in (typing.Union, types.UnionType)
+
+
 def _is_type_compatible(produced: Any, expected: Any) -> bool:
-    """Return whether a produced type can be assigned to an expected type."""
+    """Return whether a produced annotation can be assigned to an expected one.
+
+    Parameterized annotations are compared recursively.  This deliberately
+    treats their arguments covariantly: task outputs are validated by Pydantic
+    before they cross an edge, so the question here is whether every produced
+    value is accepted by the downstream annotation rather than whether a
+    mutable container may safely be shared between arbitrary Python callers.
+    """
     if expected is Any or produced is Any or produced == expected:
         return True
-    origin = get_origin(expected)
-    if origin in (typing.Union, types.UnionType):
+
+    # Every possible produced value must be accepted.  Conversely, an expected
+    # union only needs one arm which accepts the produced annotation.
+    if _is_union(produced):
+        return all(_is_type_compatible(option, expected) for option in get_args(produced))
+    if _is_union(expected):
         return any(_is_type_compatible(produced, option) for option in get_args(expected))
+
+    produced_origin = get_origin(produced)
+    expected_origin = get_origin(expected)
+    if produced_origin is not None or expected_origin is not None:
+        produced_base = produced_origin or produced
+        expected_base = expected_origin or expected
+        if not isinstance(produced_base, type) or not isinstance(expected_base, type):
+            return False
+        if not issubclass(produced_base, expected_base):
+            return False
+
+        produced_args = get_args(produced)
+        expected_args = get_args(expected)
+        if not expected_args:
+            return True
+        if not produced_args:
+            return False
+
+        # A fixed-length tuple can be assigned to tuple[T, ...] when each of
+        # its elements can be assigned to T.
+        if expected_base is tuple and len(expected_args) == 2 and expected_args[1] is Ellipsis:
+            if len(produced_args) == 2 and produced_args[1] is Ellipsis:
+                return _is_type_compatible(produced_args[0], expected_args[0])
+            return all(_is_type_compatible(arg, expected_args[0]) for arg in produced_args)
+
+        if len(produced_args) != len(expected_args):
+            return False
+        return all(
+            _is_type_compatible(produced_arg, expected_arg)
+            for produced_arg, expected_arg in zip(produced_args, expected_args, strict=True)
+        )
+
     if isinstance(produced, type) and isinstance(expected, type):
         return issubclass(produced, expected)
     return False
 
 
 def _type_name(annotation: Any) -> str:
-    """Return a readable name for a runtime or typing annotation."""
+    """Return a readable, complete name for a runtime or typing annotation."""
+    if annotation is Any:
+        return "Any"
+    if annotation is None or annotation is type(None):
+        return "None"
+    if annotation is Ellipsis:
+        return "..."
+    if _is_union(annotation):
+        return " | ".join(_type_name(arg) for arg in get_args(annotation))
+    origin = get_origin(annotation)
+    if origin is not None:
+        origin_name = getattr(origin, "__name__", str(origin).removeprefix("typing."))
+        return f"{origin_name}[{', '.join(_type_name(arg) for arg in get_args(annotation))}]"
     return getattr(annotation, "__name__", str(annotation))
 
 
@@ -337,12 +397,12 @@ class Workflow:
                             if (
                                 up_annotation is not None
                                 and down_annotation is not None
-                                and not issubclass(up_annotation, down_annotation)
+                                and not _is_type_compatible(up_annotation, down_annotation)
                             ):
                                 raise WorkflowDefinitionError(
                                     f"Type mismatch: {deps}.{field_name} is "
-                                    f"{up_annotation.__name__} but {name}.{field_name} "
-                                    f"expects {down_annotation.__name__}"
+                                    f"{_type_name(up_annotation)} but {name}.{field_name} "
+                                    f"expects {_type_name(down_annotation)}"
                                 )
                     # Check all required fields are covered by upstream or config
                     covered = set(up_fields.keys()) | cf
