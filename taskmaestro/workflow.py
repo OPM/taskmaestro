@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Union
+import types
+import typing
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
     from taskmaestro.job import JobConfiguration
 
+from taskmaestro.dependencies import (
+    CollectionDependency,
+    CollectionRef,
+    OutputRef,
+    OutputReference,
+)
 from taskmaestro.exceptions import (
     CycleDetectedError,
     IncompleteInputError,
@@ -21,8 +29,9 @@ from taskmaestro.task import Task, get_input_type, get_output_type
 #   str               — single upstream (whole output)
 #   tuple[str, str]   — single upstream, specific field
 #   dict[str, str | tuple[str, str]]  — fan-in (values may be field refs)
-DepValue = Union[str, "tuple[str, str]"]
-StoredDeps = Union[dict[str, DepValue], str, "tuple[str, str]", None]
+type DepValue = str | tuple[str, str]
+type FanInValue = DepValue | CollectionRef
+type StoredDeps = dict[str, FanInValue] | str | tuple[str, str] | None
 
 
 def _extract_upstream_names(deps: StoredDeps) -> set[str]:
@@ -33,14 +42,32 @@ def _extract_upstream_names(deps: StoredDeps) -> set[str]:
         return {deps}
     if isinstance(deps, tuple):
         return {deps[0]}
-    # dict
     names: set[str] = set()
-    for v in deps.values():
-        if isinstance(v, tuple):
-            names.add(v[0])
+    for value in deps.values():
+        if isinstance(value, CollectionRef):
+            names.update(ref.task_name for ref in value.output_refs())
+        elif isinstance(value, tuple):
+            names.add(value[0])
         else:
-            names.add(v)
+            names.add(value)
     return names
+
+
+def _is_type_compatible(produced: Any, expected: Any) -> bool:
+    """Return whether a produced type can be assigned to an expected type."""
+    if expected is Any or produced is Any or produced == expected:
+        return True
+    origin = get_origin(expected)
+    if origin in (typing.Union, types.UnionType):
+        return any(_is_type_compatible(produced, option) for option in get_args(expected))
+    if isinstance(produced, type) and isinstance(expected, type):
+        return issubclass(produced, expected)
+    return False
+
+
+def _type_name(annotation: Any) -> str:
+    """Return a readable name for a runtime or typing annotation."""
+    return getattr(annotation, "__name__", str(annotation))
 
 
 class Workflow:
@@ -288,6 +315,20 @@ class Workflow:
                         raise WorkflowDefinitionError(
                             f"Fan-in field '{field_name}' not found on {downstream_input.__name__}"
                         )
+                    field_annotation = model_fields[field_name].annotation
+                    if isinstance(upstream_ref, CollectionRef):
+                        if field_name in cf:
+                            raise WorkflowDefinitionError(
+                                f"Field '{field_name}' on task '{name}' is supplied by both "
+                                "a collection dependency and config_fields"
+                            )
+                        self._validate_collection(
+                            name,
+                            field_name,
+                            field_annotation,
+                            upstream_ref,
+                        )
+                        continue
                     if isinstance(upstream_ref, tuple):
                         up_name, up_field = upstream_ref
                         up_cls = self._tasks[up_name]
@@ -302,17 +343,16 @@ class Workflow:
                     else:
                         up_cls = self._tasks[upstream_ref]
                         resolved_type = get_output_type(up_cls)
-                    field_annotation = model_fields[field_name].annotation
                     if (
                         field_annotation is not None
                         and resolved_type is not None
-                        and not issubclass(resolved_type, field_annotation)
+                        and not _is_type_compatible(resolved_type, field_annotation)
                     ):
                         raise WorkflowDefinitionError(
                             f"Fan-in type mismatch: {upstream_ref} outputs "
-                            f"{resolved_type.__name__} but field '{field_name}' "
+                            f"{_type_name(resolved_type)} but field '{field_name}' "
                             f"on {downstream_input.__name__} expects "
-                            f"{field_annotation.__name__}"
+                            f"{_type_name(field_annotation)}"
                         )
                 # Validate config field names exist on the model
                 for field_name in cf:
@@ -330,6 +370,60 @@ class Workflow:
                             f"{downstream_input.__name__} is not mapped to any "
                             f"upstream task"
                         )
+
+    def _resolve_output_ref_type(self, ref: OutputRef) -> Any:
+        """Resolve the type produced by an output reference."""
+        output_type = get_output_type(self._tasks[ref.task_name])
+        if ref.output_field is None:
+            return output_type
+        if ref.output_field not in output_type.model_fields:
+            raise WorkflowDefinitionError(
+                f"Field '{ref.output_field}' not found on {output_type.__name__} "
+                f"(output of {ref.task_name})"
+            )
+        return output_type.model_fields[ref.output_field].annotation
+
+    def _validate_collection(
+        self,
+        task_name: str,
+        field_name: str,
+        field_annotation: Any,
+        collection: CollectionRef,
+    ) -> None:
+        """Validate a collection dependency against its destination field."""
+        origin = get_origin(field_annotation)
+        args = get_args(field_annotation)
+        if collection.kind == "positional":
+            if origin is not list or len(args) != 1:
+                raise WorkflowDefinitionError(
+                    f"Positional collection for '{task_name}.{field_name}' requires "
+                    f"a list[T] field, got {_type_name(field_annotation)}"
+                )
+            expected_type = args[0]
+            members = [
+                (str(index), ref) for index, ref in enumerate(collection.positional_members)
+            ]
+        else:
+            if origin is not dict or len(args) != 2 or args[0] is not str:
+                raise WorkflowDefinitionError(
+                    f"Keyed collection for '{task_name}.{field_name}' requires "
+                    f"a dict[str, T] field, got {_type_name(field_annotation)}"
+                )
+            expected_type = args[1]
+            members = list(collection.keyed_members)
+
+        for member_label, ref in members:
+            produced_type = self._resolve_output_ref_type(ref)
+            if produced_type is not None and not _is_type_compatible(produced_type, expected_type):
+                source = ref.task_name
+                if ref.output_field is not None:
+                    source += f".{ref.output_field}"
+                raise WorkflowDefinitionError(
+                    f"Collection type mismatch for "
+                    f"'{task_name}.{field_name}[{member_label}]': '{source}' produces "
+                    f"{_type_name(produced_type)}, but collection element type is "
+                    f"{_type_name(expected_type)}"
+                )
 
     def _validate_result_task(self) -> None:
         """Ensure result_task is set. Default to sole sink; raise if ambiguous."""
@@ -425,6 +519,29 @@ class WorkflowBuilder:
             return dep
         return self._resolve_dep_name(dep)
 
+    def _resolve_output_reference(self, ref: OutputReference) -> OutputRef:
+        """Resolve a public task/output-field reference."""
+        if isinstance(ref, tuple):
+            task_ref, output_field = ref
+            return OutputRef(self._resolve_dep_ref(task_ref), output_field)
+        return OutputRef(self._resolve_dep_ref(ref))
+
+    def _resolve_collection(self, collection: CollectionDependency) -> CollectionRef:
+        """Resolve every task reference in a collection dependency."""
+        if collection.kind == "positional":
+            return CollectionRef(
+                "positional",
+                positional_members=tuple(
+                    self._resolve_output_reference(ref) for ref in collection.positional_members
+                ),
+            )
+        return CollectionRef(
+            "keyed",
+            keyed_members=tuple(
+                (key, self._resolve_output_reference(ref)) for key, ref in collection.keyed_members
+            ),
+        )
+
     def add_task(
         self,
         task_cls: type[Task[Any, Any]],
@@ -434,7 +551,13 @@ class WorkflowBuilder:
             type[Task[Any, Any]]
             | str
             | tuple[type[Task[Any, Any]] | str, str]
-            | dict[str, type[Task[Any, Any]] | str | tuple[type[Task[Any, Any]] | str, str]]
+            | dict[
+                str,
+                type[Task[Any, Any]]
+                | str
+                | tuple[type[Task[Any, Any]] | str, str]
+                | CollectionDependency,
+            ]
             | None
         ) = None,
         config_fields: list[str] | None = None,
@@ -451,6 +574,7 @@ class WorkflowBuilder:
         - ``(TaskClass | "name", "field")`` — single upstream, specific output field
         - ``{"field": TaskClass | "name", ...}`` — fan-in, whole outputs
         - ``{"field": (TaskClass | "name", "f"), ...}`` — fan-in with field routing
+        - ``{"field": collect(...), ...}`` — collect outputs into a list or dictionary
         """
         wf = self._workflow
         task_name = name if name is not None else task_cls.name
@@ -465,9 +589,11 @@ class WorkflowBuilder:
             resolved_name = self._resolve_dep_ref(dep_ref)
             wf._dependencies[task_name] = (resolved_name, field)
         elif isinstance(depends_on, dict):
-            resolved: dict[str, DepValue] = {}
+            resolved: dict[str, FanInValue] = {}
             for field, dep in depends_on.items():
-                if isinstance(dep, tuple):
+                if isinstance(dep, CollectionDependency):
+                    resolved[field] = self._resolve_collection(dep)
+                elif isinstance(dep, tuple):
                     dep_ref, dep_field = dep
                     resolved_name = self._resolve_dep_ref(dep_ref)
                     resolved[field] = (resolved_name, dep_field)

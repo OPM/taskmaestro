@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, get_args, get_origin
 
+from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.task import get_input_type, get_output_type
 
 if TYPE_CHECKING:
@@ -12,13 +13,18 @@ if TYPE_CHECKING:
     from taskmaestro.workflow import Workflow
 
 
-def _safe_type_name(tp: type, context_cls: type | None = None) -> str:
+def _safe_type_name(tp: Any, context_cls: type | None = None) -> str:
     """Return a Mermaid-safe type name, resolving module-level aliases.
 
     When *context_cls* is provided, its module namespace is scanned for a
     variable that refers to *tp*, so that ``GridCase = ObjectModel[X]``
     renders as ``GridCase`` instead of ``ObjectModel[X]``.
     """
+    origin = get_origin(tp)
+    if origin is not None:
+        origin_name = getattr(origin, "__name__", str(origin))
+        args = ", ".join(_safe_type_name(arg, context_cls) for arg in get_args(tp))
+        return f"{origin_name}&lsaquo;{args}&rsaquo;"
     name = tp.__name__ if hasattr(tp, "__name__") else str(tp)
     if "[" not in name:
         return name
@@ -40,6 +46,14 @@ def _field_type_label(task_by_name: dict[str, type], upstream_name: str, field_n
     annotation = field_info.annotation
     type_label = _safe_type_name(annotation, upstream_cls) if annotation is not None else "Any"
     return f".{field_name}: {type_label}"
+
+
+def _output_ref_label(task_by_name: dict[str, type], ref: OutputRef) -> str:
+    """Return the type label for a resolved output reference."""
+    task_cls = task_by_name[ref.task_name]
+    if ref.output_field is None:
+        return _safe_type_name(get_output_type(task_cls), task_cls)
+    return _field_type_label(task_by_name, ref.task_name, ref.output_field)
 
 
 def _apply_redirect(name: str, redirect: dict[str, str]) -> str:
@@ -81,7 +95,31 @@ def _emit_edges(
             lines.append(f"{indent}{upstream_src} -->|{label}| {tgt_name}")
         elif isinstance(deps, dict):
             for down_field, upstream_ref in sorted(deps.items()):
-                if isinstance(upstream_ref, tuple):
+                if isinstance(upstream_ref, CollectionRef):
+                    collection_node = f"_collect_{tgt_name}_{down_field}_"
+                    lines.append(f'{indent}{collection_node}{{{{"collect {down_field}"}}}}')
+                    if upstream_ref.kind == "positional":
+                        members = [
+                            (str(index), ref)
+                            for index, ref in enumerate(upstream_ref.positional_members)
+                        ]
+                    else:
+                        members = list(upstream_ref.keyed_members)
+                    for member_label, ref in members:
+                        upstream_src = _apply_redirect(ref.task_name, source_redirect)
+                        label = _output_ref_label(task_by_name, ref)
+                        lines.append(
+                            f"{indent}{upstream_src} -->|{member_label}: {label}| "
+                            f"{collection_node}"
+                        )
+                    input_model = get_input_type(task_cls)
+                    annotation = input_model.model_fields[down_field].annotation
+                    collection_type = _safe_type_name(annotation, task_cls)
+                    lines.append(
+                        f"{indent}{collection_node} -->|{down_field}: {collection_type}| "
+                        f"{tgt_name}"
+                    )
+                elif isinstance(upstream_ref, tuple):
                     upstream_name, up_field = upstream_ref
                     upstream_src = _apply_redirect(upstream_name, source_redirect)
                     label = _field_type_label(task_by_name, upstream_name, up_field)

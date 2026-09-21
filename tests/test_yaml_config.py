@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import BaseModel, ValidationError
 
 from taskmaestro import (
@@ -17,6 +18,7 @@ from taskmaestro.yaml_config import (
     TaskConfig,
     YamlWorkflowConfig,
     _coerce_hook_params,
+    _yaml_load,
     import_class,
     load_workflow_from_yaml,
     run_workflow_from_yaml,
@@ -122,6 +124,56 @@ def _write_input_yaml(tmp_path: Path, content: str) -> Path:
 # ============================================================
 # TestImportClass
 # ============================================================
+
+
+class TestYamlMergeKeys:
+    def test_nested_merges_allow_overrides_and_reused_anchors(self) -> None:
+        text = """\
+defaults: &defaults {value: 1, other: 2}
+override: &override {value: 3}
+merged: &merged
+  <<: [*override, *defaults]
+  other: 4
+first: {<<: *merged}
+second: {<<: *merged, value: 5}
+"""
+        result = _yaml_load(text)
+
+        assert result == yaml.safe_load(text)
+        assert result["first"] == {"value": 3, "other": 4}
+        assert result["second"] == {"value": 5, "other": 4}
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "value: 1\nvalue: 2\n",
+            "<<: {value: 1}\nvalue: 2\nvalue: 3\n",
+            "<<: {value: 1, value: 2}\n",
+            "<<: {<<: {value: 1, value: 2}}\n",
+        ],
+    )
+    def test_explicit_duplicates_are_still_rejected(self, text: str) -> None:
+        with pytest.raises(yaml.constructor.ConstructorError, match="duplicate key"):
+            _yaml_load(text)
+
+    def test_workflow_and_input_yaml_support_merges(self, tmp_path: Path) -> None:
+        workflow_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+defaults: &defaults
+  task: {THIS_MODULE}.UpperText
+workflow:
+  name: merged
+  tasks:
+    - <<: *defaults
+""",
+        )
+        input_path = _write_input_yaml(tmp_path, "<<: {text: default}\ntext: override\n")
+
+        result = load_workflow_from_yaml(workflow_path, input_path).run()
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == TextOutput(text="OVERRIDE")
 
 
 class TestImportClass:
