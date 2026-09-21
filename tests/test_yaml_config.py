@@ -939,6 +939,153 @@ workflow:
 class TestYamlNamedInstances:
     """Tests for YAML configs with name: field on tasks."""
 
+    def test_ambiguous_class_path_dependency_raises(self, tmp_path: Path) -> None:
+        """The same class under two names cannot be referenced by class path."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: ambiguous
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_a
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_b
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: {THIS_MODULE}.ReverseText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(
+            ConfigLoadError,
+            match=(
+                rf"Dependency '{THIS_MODULE}\.ReverseText' for task "
+                rf"'{THIS_MODULE}\.TextLength' is ambiguous; it matches "
+                r"\['rev_a', 'rev_b'\]\. Use the instance name\."
+            ),
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_ambiguous_class_path_resolved_by_instance_name(self, tmp_path: Path) -> None:
+        """Using the instance name disambiguates; both instances run."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: disambiguated
+  result_task: length_b
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_a
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_b
+      depends_on: rev_a
+    - task: {THIS_MODULE}.TextLength
+      name: length_b
+      depends_on: rev_b
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert loaded.workflow.get_dependencies("rev_b") == "rev_a"
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.length == 5  # type: ignore[union-attr]
+
+    def test_ambiguous_result_task_raises(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: ambiguous_result
+  result_task: {THIS_MODULE}.ReverseText
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_a
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.ReverseText
+      name: rev_b
+      depends_on: {THIS_MODULE}.UpperText
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(
+            ConfigLoadError,
+            match=rf"result_task '{THIS_MODULE}\.ReverseText' is ambiguous",
+        ):
+            load_workflow_from_yaml(wf_path, in_path)
+
+    def test_same_inner_workflow_file_twice(self, tmp_path: Path) -> None:
+        """Two workflow: entries for one file get distinct tasks and wiring."""
+        (tmp_path / "inner.yaml").write_text(
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.ReverseText
+"""
+        )
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - workflow: inner.yaml
+      name: first_reverse
+      depends_on: {THIS_MODULE}.UpperText
+    - workflow: inner.yaml
+      name: second_reverse
+      depends_on: first_reverse
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        loaded = load_workflow_from_yaml(wf_path, in_path)
+        assert list(loaded.workflow._tasks) == ["upper_text", "first_reverse", "second_reverse"]
+        assert loaded.workflow.get_dependencies("second_reverse") == "first_reverse"
+        result = loaded.run()
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.text == "HELLO"  # type: ignore[union-attr]
+
+    def test_same_inner_workflow_file_referenced_by_path_is_ambiguous(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / "inner.yaml").write_text(
+            f"""\
+workflow:
+  name: inner
+  tasks:
+    - task: {THIS_MODULE}.ReverseText
+"""
+        )
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: outer
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+    - workflow: inner.yaml
+      name: a
+      depends_on: {THIS_MODULE}.UpperText
+    - workflow: inner.yaml
+      name: b
+      depends_on: {THIS_MODULE}.UpperText
+    - task: {THIS_MODULE}.TextLength
+      depends_on: inner.yaml
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "text: hello\n")
+        with pytest.raises(ConfigLoadError, match=r"'inner\.yaml'.*is ambiguous.*\['a', 'b'\]"):
+            load_workflow_from_yaml(wf_path, in_path)
+
     def test_named_instances_yaml(self, tmp_path: Path) -> None:
         """YAML with name: field on tasks loads and resolves dependencies correctly."""
         wf_path = _write_workflow_yaml(
@@ -1006,7 +1153,7 @@ workflow:
 """,
         )
         in_path = _write_input_yaml(tmp_path, "text: hello\n")
-        with pytest.raises(ConfigLoadError, match=r"result_task.*not found"):
+        with pytest.raises(ConfigLoadError, match=r"^result_task 'nonexistent_task' not found$"):
             load_workflow_from_yaml(wf_path, in_path)
 
     def test_named_result_task(self, tmp_path: Path) -> None:
