@@ -152,18 +152,24 @@ class Workflow:
         self._task_maps: dict[str, TaskMap] = {}
         self._result_task_name: str | None = None
 
-        if tasks:
+        if tasks is not None:
+            if not tasks:
+                raise WorkflowDefinitionError(
+                    f"Workflow '{name}' was given an empty task list; "
+                    "pass at least one task or use Workflow.builder()"
+                )
             for i, task_cls in enumerate(tasks):
+                if task_cls.name in self._tasks:
+                    raise WorkflowDefinitionError(f"Duplicate task name '{task_cls.name}'")
                 self._tasks[task_cls.name] = task_cls
                 if i == 0:
                     self._dependencies[task_cls.name] = None
                 else:
                     prev = tasks[i - 1]
                     self._dependencies[task_cls.name] = prev.name
-            self._result_task_name = tasks[-1].name
+            self._result_task_name = result_task.name if result_task is not None else None
             self._validate()
-
-        if result_task is not None:
+        elif result_task is not None:
             self._result_task_name = result_task.name
 
     @classmethod
@@ -246,10 +252,13 @@ class Workflow:
         self._validate_result_task()
 
     def _validate_unique_names(self) -> None:
-        """Raise WorkflowDefinitionError on duplicate task names."""
-        # Already handled by dict keys in _tasks; duplicates would overwrite.
-        # For linear shorthand, check the input list explicitly.
-        pass
+        """Duplicate task names are rejected at registration time.
+
+        Both ``Workflow(tasks=[...])`` and ``WorkflowBuilder.add_task`` check
+        before inserting into ``_tasks``, so by the time validation runs the
+        mapping is guaranteed to be unique.  Kept as an explicit step so the
+        validation order documented in CLAUDE.md remains visible here.
+        """
 
     def _validate_references(self) -> None:
         """Ensure all dependency references point to registered task names."""
@@ -414,11 +423,11 @@ class Workflow:
                                 f"upstream output or config_fields"
                             )
                 else:
-                    if upstream_output is not downstream_input:
+                    if not _is_type_compatible(upstream_output, downstream_input):
                         raise WorkflowDefinitionError(
                             f"Type mismatch: {deps} outputs "
                             f"{_type_name(upstream_output)} but {name} expects "
-                            f"{downstream_input.__name__}"
+                            f"{_type_name(downstream_input)}"
                         )
             elif isinstance(deps, tuple):
                 # Single dependency, specific output field
@@ -432,11 +441,13 @@ class Workflow:
                     )
                 field_annotation = upstream_fields[field_name].annotation
                 downstream_input = get_input_type(task_cls)
-                if field_annotation is not None and downstream_input is not field_annotation:
+                if field_annotation is not None and not _is_type_compatible(
+                    field_annotation, downstream_input
+                ):
                     raise WorkflowDefinitionError(
                         f"Type mismatch: {upstream_name}.{field_name} is "
-                        f"{field_annotation.__name__} but {name} expects "
-                        f"{downstream_input.__name__}"
+                        f"{_type_name(field_annotation)} but {name} expects "
+                        f"{_type_name(downstream_input)}"
                     )
             elif isinstance(deps, dict):
                 # Fan-in: validate each field
@@ -562,16 +573,22 @@ class Workflow:
                 )
 
     def _validate_result_task(self) -> None:
-        """Ensure result_task is set. Default to sole sink; raise if ambiguous."""
-        sinks = self._find_sinks()
-        if self._result_task_name is None:
-            if len(sinks) == 1:
-                self._result_task_name = sinks[0]
-            else:
+        """Ensure result_task is set and registered. Default to sole sink; raise if ambiguous."""
+        if self._result_task_name is not None:
+            if self._result_task_name not in self._tasks:
                 raise WorkflowDefinitionError(
-                    f"Workflow '{self.name}' has {len(sinks)} sink tasks "
-                    f"({sinks}); specify result_task explicitly"
+                    f"result_task '{self._result_task_name}' is not registered in "
+                    f"workflow '{self.name}' (known tasks: {sorted(self._tasks)})"
                 )
+            return
+        sinks = self._find_sinks()
+        if len(sinks) == 1:
+            self._result_task_name = sinks[0]
+        else:
+            raise WorkflowDefinitionError(
+                f"Workflow '{self.name}' has {len(sinks)} sink tasks "
+                f"({sinks}); specify result_task explicitly"
+            )
 
     def as_task(
         self,
