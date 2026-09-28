@@ -31,7 +31,6 @@ from taskmaestro import (
     JobConfiguration,
     Runner,
     Task,
-    TaskMap,
     Workflow,
     collect,
 )
@@ -260,16 +259,14 @@ def build_workflow() -> Workflow:
             "checks": collect(tests=tests, lint=lint, types=types),
         },
     )
-    builds = builder.task(
+    builds = builder.map_task(
         BuildTarget,
         name="build_targets",
         depends_on={"release": validated},
-        mapped_over=TaskMap(
-            over="targets",
-            key_as="target_name",
-            value_as="settings",
-            error_mode="collect_all",
-        ),
+        over="targets",
+        key_as="target_name",
+        value_as="settings",
+        error_mode="collect_all",
     )
     builder.task(
         CreateReleaseManifest,

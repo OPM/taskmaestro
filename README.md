@@ -338,29 +338,20 @@ mapping. Mapped items execute sequentially in mapping declaration order.
 Each item gets a fresh task instance and child `ExecutionContext`.
 
 ```python
-from taskmaestro import TaskMap
-
-workflow = (
-    Workflow.builder("create_grid")
-    .add_task(ConnectToResInsight)
-    .add_task(
-        LoadRegularSurface,
-        name="load_surfaces",
-        depends_on={"resinsight": ConnectToResInsight},
-        config_fields=["unit"],
-        mapped_over=TaskMap(
-            over="surfaces",
-            key_as="surface_name",
-            value_as="path",
-            error_mode="fail_fast",
-        ),
-    )
-    .add_task(
-        CreateGrid,
-        depends_on={"surfaces": "load_surfaces"},
-    )
-    .build()
+builder = Workflow.builder("create_grid")
+connection = builder.task(ConnectToResInsight)
+surfaces = builder.map_task(
+    LoadRegularSurface,
+    name="load_surfaces",
+    depends_on={"resinsight": connection},
+    config_fields=["unit"],
+    over="surfaces",
+    key_as="surface_name",
+    value_as="path",
+    error_mode="fail_fast",
 )
+builder.task(CreateGrid, depends_on={"surfaces": surfaces})
+workflow = builder.build()
 ```
 
 The mapped task's input model contains the injected key and value fields, not
