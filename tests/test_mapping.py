@@ -191,9 +191,11 @@ class TestMappedWorkflowValidation:
 
     def test_mapped_task_output_is_automatically_unwrapped(self) -> None:
         builder = Workflow.builder("mapped_handles")
-        mapped = builder.task(
+        mapped = builder.map_task(
             MappedOnly,
-            mapped_over=TaskMap("items", "item_name", "amount"),
+            over="items",
+            key_as="item_name",
+            value_as="amount",
         )
         builder.task(
             SumAggregate,

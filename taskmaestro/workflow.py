@@ -5,7 +5,7 @@ from __future__ import annotations
 import types
 import typing
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args, get_origin
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -854,6 +854,35 @@ class WorkflowBuilder:
         task_name = name if name is not None else task_cls.name
         output_type = cast(type[BaseModel], self._workflow.get_output_annotation(task_name))
         return TaskHandle(task_name, output_type, self._handle_owner)
+
+    def map_task(
+        self,
+        task_cls: type[Task[Any, O]],
+        *,
+        over: str,
+        key_as: str,
+        value_as: str,
+        error_mode: Literal["fail_fast", "collect_all"] = "fail_fast",
+        name: str | None = None,
+        depends_on: (
+            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
+        ) = None,
+        config_fields: list[str] | None = None,
+    ) -> TaskHandle[MappedOutput[O]]:
+        """Add a task mapped over configured items and return its handle."""
+        handle = self.task(
+            task_cls,
+            name=name,
+            depends_on=depends_on,
+            config_fields=config_fields,
+            mapped_over=TaskMap(
+                over=over,
+                key_as=key_as,
+                value_as=value_as,
+                error_mode=error_mode,
+            ),
+        )
+        return cast(TaskHandle[MappedOutput[O]], handle)
 
     def set_result_task(self, task: TaskReference) -> WorkflowBuilder:
         """Select the result task, accepting a class, name, or task handle."""
