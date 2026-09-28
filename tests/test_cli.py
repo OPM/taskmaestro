@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-from pydantic import BaseModel
-
-from taskmaestro import ExecutionContext, Task
 from taskmaestro.cli import main
 
-THIS_MODULE = "tests.test_cli"
 
+def _files(tmp_path: Path, task: str = "Increment") -> tuple[Path, Path]:
+    (tmp_path / "pipeline.py").write_text(
+        """\
+from pydantic import BaseModel
+from taskmaestro import ExecutionContext, Task
 
 class NumberInput(BaseModel):
     value: int
 
-
 class NumberOutput(BaseModel):
     value: int
-
 
 class Increment(Task[NumberInput, NumberOutput]):
     name = "increment"
@@ -26,15 +26,15 @@ class Increment(Task[NumberInput, NumberOutput]):
     def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
         return NumberOutput(value=input.value + 1)
 
-
 class Fail(Task[NumberInput, NumberOutput]):
     name = "fail"
 
     def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
         raise ValueError("intentional failure")
-
-
-def _files(tmp_path: Path, task: str = "Increment") -> tuple[Path, Path]:
+""",
+        encoding="utf-8",
+    )
+    sys.modules.pop("pipeline", None)
     workflow = tmp_path / "workflow.yaml"
     workflow.write_text(
         f"""\
@@ -42,7 +42,7 @@ workflow:
   name: cli_test
   input_mode: flat
   tasks:
-    - task: {THIS_MODULE}.{task}
+    - task: pipeline.{task}
 """,
         encoding="utf-8",
     )
@@ -82,10 +82,12 @@ def test_run_reports_failed_job(tmp_path: Path, capsys: object) -> None:
 
 def test_validate_reports_success(tmp_path: Path, capsys: object) -> None:
     workflow, input_path = _files(tmp_path)
+    original_path = sys.path.copy()
 
     status = main(["validate", str(workflow), "--input", str(input_path)])
 
     assert status == 0
+    assert sys.path == original_path
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Workflow 'cli_test' is valid" in captured.out
 
