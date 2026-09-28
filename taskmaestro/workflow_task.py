@@ -45,13 +45,8 @@ def workflow_task(
     completed inner :class:`~taskmaestro.job.Job` and chains the original
     exception as ``__cause__``.
     """
-    # Find root tasks: tasks with deps=None and no config_fields
-    roots: list[tuple[str, type[Task[Any, Any]]]] = []
-    for task_name, deps in workflow._dependencies.items():
-        if deps is None:
-            config_fields = workflow.get_config_fields(task_name)
-            if not config_fields and not workflow.is_mapped_task(task_name):
-                roots.append((task_name, workflow._tasks[task_name]))
+    # Root tasks consuming the job input (not configured, not mapped).
+    roots = [(name, workflow._tasks[name]) for name in workflow.input_root_names()]
 
     all_roots_configured = False
 

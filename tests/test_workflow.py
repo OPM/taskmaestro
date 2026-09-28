@@ -812,6 +812,32 @@ class TestGetDependencies:
         assert deps == {"a": "add_one", "b": "add_one_b"}
 
 
+class TestInputRootNames:
+    def test_excludes_configured_mapped_and_dependent_tasks(self) -> None:
+        from taskmaestro import TaskMap
+
+        class ItemInput(BaseModel):
+            key: str
+            value: int
+
+        class Mapped(Task[ItemInput, NumberOutput]):
+            name = "mapped"
+
+            def run(self, input: ItemInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)  # pragma: no cover - never run
+
+        wf = (
+            Workflow.builder("roots", result_task="double")
+            .add_task(AddOneB)
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .add_task(Mapped, mapped_over=TaskMap("items", "key", "value"))
+            .add_task(AddOne)
+            .add_task(Double, depends_on=AddOne)
+            .build()
+        )
+        assert wf.input_root_names() == ["add_one_b", "add_one"]
+
+
 class TestNamedTaskInstances:
     """Tests for using the same Task class with different names."""
 

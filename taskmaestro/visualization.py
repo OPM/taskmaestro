@@ -186,13 +186,12 @@ def to_mermaid(
         inner_wf = getattr(task_cls, "_inner_workflow", None)
         if inner_wf is not None:
             workflow_task_nodes[task_name] = inner_wf
-            # Find inner root(s): tasks with no dependencies and no config_fields
-            inner_tasks = inner_wf.topological_order()
-            for iname, _icls in inner_tasks:
-                ideps = inner_wf.get_dependencies(iname)
-                if ideps is None and not inner_wf.get_config_fields(iname):
-                    target_redirect[task_name] = f"{task_name}__{iname}"
-                    break
+            # Edges into the subgraph enter at the inner task consuming the
+            # wrapper's input (the same root workflow_task derives its input
+            # type from); configured and mapped roots are fed by config.
+            inner_roots = inner_wf.input_root_names()
+            if inner_roots:
+                target_redirect[task_name] = f"{task_name}__{inner_roots[0]}"
             # Result task → source redirect
             source_redirect[task_name] = f"{task_name}__{inner_wf.result_task_name}"
 

@@ -432,6 +432,55 @@ class TestWorkflowTaskSubgraph:
         assert 'stringify["stringify"]' in result
         assert "stringify -->|StringOutput| _end_" in result
 
+    def test_outer_edges_skip_mapped_inner_root(self) -> None:
+        """A mapped inner root is fed by config, so edges enter at the input root."""
+        from taskmaestro import JobConfiguration, TaskMap
+        from tests.conftest import AddOne, NumberInput, NumberOutput
+
+        class ItemInput(BaseModel):
+            key: str
+            value: int
+
+        class AMapped(Task[ItemInput, NumberOutput]):
+            name = "a_mapped"  # sorts before the input root
+
+            def run(self, input: ItemInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)  # pragma: no cover - never run
+
+        class CombineInput(BaseModel):
+            mapped: dict[str, NumberOutput]
+            entry: NumberOutput
+
+        class Combine(Task[CombineInput, NumberOutput]):
+            name = "combine"
+
+            def run(self, input: CombineInput, ctx: ExecutionContext) -> NumberOutput:
+                return input.entry  # pragma: no cover - never run
+
+        inner = (
+            Workflow.builder("inner")
+            .add_task(AMapped, mapped_over=TaskMap("items", "key", "value"))
+            .add_task(AddOne)
+            .add_task(Combine, depends_on={"mapped": AMapped, "entry": AddOne})
+            .build()
+        )
+        wrapped = inner.as_task(
+            name="wrapped",
+            job_configuration=JobConfiguration({"a_mapped": {"items": {"x": 1}}}),
+        )
+
+        class Source(Task[NumberInput, NumberInput]):
+            name = "source"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberInput:
+                return input  # pragma: no cover - never run
+
+        outer = Workflow("outer", [Source, wrapped])
+        result = to_mermaid(outer)
+
+        assert "source -->|NumberInput| wrapped__add_one" in result
+        assert "source -->|NumberInput| wrapped__a_mapped" not in result
+
     def test_three_task_inner_workflow_subgraph(self) -> None:
         """workflow_task wrapping a 3-task chain renders all inner nodes/edges."""
         from tests.conftest import AddOne, Double, Stringify
