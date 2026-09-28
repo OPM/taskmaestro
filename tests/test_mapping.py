@@ -405,6 +405,14 @@ class TestMappedJobValidation:
         with pytest.raises(WorkflowDefinitionError, match="requires JobConfiguration"):
             Job(workflow, NumberInput(value=1))
 
+    def test_mapped_task_config_fields_are_required(self) -> None:
+        workflow = _mapped_workflow()
+        config = JobConfiguration({"mapped_number": {"items": {"one": 1}}})
+        with pytest.raises(
+            WorkflowDefinitionError, match=r"missing configuration fields \['multiplier'\]"
+        ):
+            Job(workflow, NumberInput(value=1), job_configuration=config)
+
     def test_map_source_is_required(self) -> None:
         workflow = _mapped_workflow()
         config = JobConfiguration({"mapped_number": {"multiplier": 2}})
@@ -698,7 +706,9 @@ class TestMappedExecution:
         job = Job(
             workflow,
             NumberInput(value=1),
-            job_configuration=JobConfiguration({"mapped_number": {"items": {"one": 1}}}),
+            job_configuration=JobConfiguration(
+                {"mapped_number": {"multiplier": "not-an-int", "items": {"one": 1}}}
+            ),
         )
         hook = RecordingMapHook()
 

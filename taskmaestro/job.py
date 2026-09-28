@@ -100,19 +100,22 @@ class Job(Generic[C]):
         self.task_results: list[TaskResult] = []
         self.mapped_item_results: dict[str, list[TaskResult]] = {}
 
+        # Map sources first: their errors are more specific than a generic
+        # missing-configuration-field error for the same mapped task.
+        self._validate_task_maps()
         self._validate_task_configuration()
         self._validate_root_task_inputs(config)
-        self._validate_task_maps()
 
     def _validate_task_configuration(self) -> None:
-        """Ensure every declared configuration field has a supplied value."""
+        """Ensure every declared configuration field has a supplied value.
+
+        This applies to every task, not only roots: a dependent or mapped task
+        whose configuration is missing would otherwise run with an incomplete
+        (or, for a single whole-output dependency, the wrong) input.
+        """
         for task_name in self.workflow._tasks:
             expected = self.workflow.get_config_fields(task_name)
-            if (
-                not expected
-                or self.workflow.get_dependencies(task_name) is not None
-                or self.workflow.is_mapped_task(task_name)
-            ):
+            if not expected:
                 continue
             supplied = (
                 self.job_configuration.config_fields_for_task(task_name)

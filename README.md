@@ -199,6 +199,8 @@ job = Job(workflow=workflow, config=EmptyConfig(), job_configuration=job_config)
 result = Runner().run(job)
 ```
 
+Every declared config field, on root, dependent and mapped tasks alike, must have a value in the `JobConfiguration`; otherwise `Job(...)` raises `WorkflowDefinitionError`.
+
 ## Nested Workflows
 
 A workflow can be wrapped as a typed task and used inside a larger workflow. Its input
