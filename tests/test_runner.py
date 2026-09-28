@@ -613,6 +613,116 @@ class TestTimeouts:
             signal.signal(signal.SIGALRM, previous)
 
 
+class TestTimerNotArmedDuringHooks:
+    """The task timer is stopped as soon as the task returns or raises."""
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_timer_idle_in_task_hooks(self, ctx: ExecutionContext) -> None:
+        import signal
+
+        class Timed(Task[NumberInput, NumberOutput]):
+            name = "timed"
+            timeout_seconds = 30
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                if input.value < 0:
+                    raise ValueError("negative")
+                return NumberOutput(value=input.value)
+
+        timers: dict[str, tuple[float, float]] = {}
+
+        class Probe(BaseHook):
+            def on_task_complete(
+                self, job: Job[Any], task: Task[Any, Any], output: BaseModel
+            ) -> None:
+                timers["complete"] = signal.getitimer(signal.ITIMER_REAL)
+
+            def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
+                timers["fail"] = signal.getitimer(signal.ITIMER_REAL)
+
+        wf = Workflow(name="test", tasks=[Timed])
+        Runner(hooks=[Probe()]).run(Job(wf, NumberInput(value=1)), ctx=ctx, timeout_seconds=60)
+        Runner(hooks=[Probe()]).run(Job(wf, NumberInput(value=-1)), ctx=ctx, timeout_seconds=60)
+        assert timers == {"complete": (0.0, 0.0), "fail": (0.0, 0.0)}
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_timer_idle_in_map_item_hooks(self) -> None:
+        import signal
+
+        from taskmaestro import TaskMap
+
+        class ItemInput(BaseModel):
+            key: str
+            value: int
+
+        class TimedItem(Task[ItemInput, NumberOutput]):
+            name = "timed_item"
+            timeout_seconds = 30
+
+            def run(self, input: ItemInput, ctx: ExecutionContext) -> NumberOutput:
+                if input.value < 0:
+                    raise ValueError("negative")
+                return NumberOutput(value=input.value)
+
+        timers: dict[str, tuple[float, float]] = {}
+
+        class Probe(BaseHook):
+            def on_map_item_complete(
+                self, job: Job[Any], task: Task[Any, Any], key: str, output: BaseModel
+            ) -> None:
+                timers[f"complete:{key}"] = signal.getitimer(signal.ITIMER_REAL)
+
+            def on_map_item_fail(
+                self, job: Job[Any], task: Task[Any, Any], key: str, error: Exception
+            ) -> None:
+                timers[f"fail:{key}"] = signal.getitimer(signal.ITIMER_REAL)
+
+        wf = (
+            Workflow.builder("mapped")
+            .add_task(TimedItem, mapped_over=TaskMap("items", "key", "value", "collect_all"))
+            .build()
+        )
+        jc = JobConfiguration({"timed_item": {"items": {"ok": 1, "bad": -1}}})
+        result = Runner(hooks=[Probe()]).run(Job(wf, EmptyConfig(), job_configuration=jc))
+        assert result.status == JobStatus.FAILED
+        assert timers == {"complete:ok": (0.0, 0.0), "fail:bad": (0.0, 0.0)}
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_slow_completion_hook_does_not_time_out_task(self, ctx: ExecutionContext) -> None:
+        """A hook outlasting the task's timeout must not turn success into a lost timeout."""
+        import time
+        import warnings
+
+        class Quick(Task[NumberInput, NumberOutput]):
+            name = "quick"
+            timeout_seconds = 0.1
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        class SlowHook(BaseHook):
+            def on_task_complete(
+                self, job: Job[Any], task: Task[Any, Any], output: BaseModel
+            ) -> None:
+                time.sleep(0.3)
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # a swallowed timeout would surface as HookError
+            result = Workflow(name="test", tasks=[Quick]).run(
+                NumberInput(value=1), hooks=[SlowHook()]
+            )
+        assert result.status == JobStatus.COMPLETED
+
+
 class TestAlarmUnavailable:
     def test_alarm_unavailable_warns(self, ctx: ExecutionContext) -> None:
         """When signal.alarm is unavailable, a warning is issued and execution proceeds."""

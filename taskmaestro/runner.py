@@ -237,7 +237,13 @@ class Runner:
                             job, task_cls, deps, config_values, outputs
                         )
                         self._arm(task.timeout_seconds, task.name, deadline)
-                        output = task.run(task_input, ctx)
+                        try:
+                            output = task.run(task_input, ctx)
+                        finally:
+                            # Stop the clock as soon as the task returns: output
+                            # checks and hooks must not be interrupted by (or
+                            # swallow) this task's timeout.
+                            self._disarm(deadline)
 
                         # Validate output matches declared type
                         expected_output_type = get_output_type(task_cls)
@@ -282,9 +288,8 @@ class Runner:
                         self._emit(Event.TASK_FAIL, job, task, exc)
                     self._emit(Event.JOB_FAIL, job)
                     return job
-                finally:
-                    self._disarm(deadline)
         finally:
+            # Safety net; each unit of work already disarms right after running.
             self._disarm(deadline)
 
         job.status = JobStatus.COMPLETED
@@ -378,10 +383,13 @@ class Runner:
             self._emit(Event.MAP_ITEM_START, job, item_task, key)
             try:
                 deadline.check()
-                self._arm(item_task.timeout_seconds, f"{parent_task.name}[{key}]", deadline)
                 input_type = get_input_type(task_cls)
                 item_input = input_type.model_validate(item_input_values)
-                output = item_task.run(item_input, item_ctx)
+                self._arm(item_task.timeout_seconds, f"{parent_task.name}[{key}]", deadline)
+                try:
+                    output = item_task.run(item_input, item_ctx)
+                finally:
+                    self._disarm(deadline)
                 if not isinstance(output, expected_output_type):
                     raise TaskOutputTypeError(
                         f"Task '{parent_task.name}[{key}]' returned "
@@ -415,8 +423,6 @@ class Runner:
                     raise
                 if task_map.error_mode == "fail_fast":
                     raise MappedTaskExecutionError(parent_task.name, errors) from exc
-            finally:
-                self._disarm(deadline)
 
         if errors:
             raise MappedTaskExecutionError(parent_task.name, errors)
