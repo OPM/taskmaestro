@@ -9,9 +9,11 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
+from pydantic_core import core_schema
 
 from taskmaestro import ExecutionContext, ObjectModel, Task
-from taskmaestro.cli import main
+from taskmaestro.cli import _dependency_spec, main
+from taskmaestro.dependencies import CollectionRef, OutputRef
 
 
 class ExternalClient:
@@ -30,6 +32,21 @@ class OpaqueInput(BaseModel):
 class OpaqueTask(Task[OpaqueInput, ClientHandle]):
     def run(self, input: OpaqueInput, ctx: ExecutionContext) -> ClientHandle:
         return input.handle
+
+
+class UnsupportedValue:
+    @classmethod
+    def __get_pydantic_core_schema__(cls, source: object, handler: object) -> object:
+        return core_schema.no_info_plain_validator_function(lambda value: value)
+
+
+class UnsupportedInput(BaseModel):
+    value: UnsupportedValue
+
+
+class UnsupportedTask(Task[UnsupportedInput, UnsupportedInput]):
+    def run(self, input: UnsupportedInput, ctx: ExecutionContext) -> UnsupportedInput:
+        return input
 
 
 def _files(tmp_path: Path, task: str = "Increment") -> tuple[Path, Path]:
@@ -450,6 +467,32 @@ def test_workflow_describe_reports_missing_config_fields(
     assert result["error"]["issues"] == [{"field": "value", "code": "missing"}]
 
 
+def test_workflow_dependency_routing_and_positional_collection() -> None:
+    """The inspector renders validated tuple and ordered collection references."""
+    assert _dependency_spec(("producer", "content")) == {
+        "task": "producer",
+        "field": "content",
+    }
+    assert _dependency_spec(
+        {
+            "items": CollectionRef(
+                "positional",
+                positional_members=(OutputRef("first"), OutputRef("second", "content")),
+            )
+        }
+    ) == {
+        "items": {
+            "collect": {
+                "kind": "positional",
+                "members": [
+                    {"task": "first", "field": None},
+                    {"task": "second", "field": "content"},
+                ],
+            }
+        }
+    }
+
+
 def test_workflow_describe_fan_in_collections_and_mapping(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -560,6 +603,36 @@ def test_tasks_describe_runtime_only_objects(
     assert input_schema["properties"]["amount"]["type"] == "integer"
     output_schema = description["output_schema"]
     assert output_schema["properties"]["value"]["x-taskmaestro-opaque"] is True
+
+
+def test_tasks_describe_unsupported_schema_reports_plugin_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry = EntryPoint(
+        name="unsupported", value="tests.test_cli:UnsupportedTask", group="taskmaestro.tasks"
+    )
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [entry])
+
+    assert main(["tasks", "describe", "unsupported", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Plugin error: Cannot describe task 'unsupported'" in captured.err
+    assert "PlainValidatorFunctionSchema" in captured.err
+
+
+def test_workflow_describe_unsupported_schema_reports_configuration_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_text(
+        "workflow:\n  name: unsupported\n  tasks:\n    - task: tests.test_cli.UnsupportedTask\n",
+        encoding="utf-8",
+    )
+
+    assert main(["workflow", "describe", str(workflow), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["error"]["code"] == "configuration_error"
+    assert captured.err == ""
 
 
 def test_tasks_describe_unknown_plugin(
