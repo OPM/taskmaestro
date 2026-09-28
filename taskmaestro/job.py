@@ -130,19 +130,14 @@ class Job(Generic[C]):
 
     def _validate_root_task_inputs(self, config: C) -> None:
         """Validate that config type matches the input type of all root tasks."""
-        for task_name, deps in self.workflow._dependencies.items():
-            if deps is None:
-                # Configured and mapped roots do not consume job.config directly.
-                config_fields = self.workflow.get_config_fields(task_name)
-                if config_fields or self.workflow.is_mapped_task(task_name):
-                    continue
-                task_cls = self.workflow._tasks[task_name]
-                expected_input = get_input_type(task_cls)
-                if not isinstance(config, expected_input):
-                    raise WorkflowDefinitionError(
-                        f"Root task '{task_name}' expects input type "
-                        f"{expected_input.__name__} but got {type(config).__name__}"
-                    )
+        # Configured and mapped roots do not consume job.config directly.
+        for task_name in self.workflow.input_root_names():
+            expected_input = get_input_type(self.workflow._tasks[task_name])
+            if not isinstance(config, expected_input):
+                raise WorkflowDefinitionError(
+                    f"Root task '{task_name}' expects input type "
+                    f"{expected_input.__name__} but got {type(config).__name__}"
+                )
 
     def _validate_task_maps(self) -> None:
         """Validate configured map sources and their key/value types."""

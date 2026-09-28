@@ -273,6 +273,19 @@ class Workflow:
         """Return whether a registered task expands over configured items."""
         return task_name in self._task_maps
 
+    def input_root_names(self) -> list[str]:
+        """Return the root tasks that consume the job input, in declaration order.
+
+        These are tasks without dependencies that are neither configured
+        (``config_fields``) nor mapped; configured and mapped roots take their
+        input from the ``JobConfiguration`` instead.
+        """
+        return [
+            name
+            for name, deps in self._dependencies.items()
+            if deps is None and not self.get_config_fields(name) and not self.is_mapped_task(name)
+        ]
+
     def get_output_annotation(self, task_name: str) -> Any:
         """Return a task instance's effective output annotation."""
         output_type = get_output_type(self._tasks[task_name])
