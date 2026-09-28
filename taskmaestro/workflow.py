@@ -469,6 +469,15 @@ class Workflow:
             elif isinstance(deps, tuple):
                 # Single dependency, specific output field
                 upstream_name, field_name = deps
+                if cf:
+                    # The routed field value becomes the whole task input, so
+                    # there is nothing to merge configuration values into.
+                    raise WorkflowDefinitionError(
+                        f"Task '{name}' depends on the output field "
+                        f"'{upstream_name}.{field_name}' and cannot also declare "
+                        f"config_fields; use a named dependency such as "
+                        f"depends_on={{'<input_field>': ({upstream_name!r}, {field_name!r})}}"
+                    )
                 upstream_output = self.get_output_annotation(upstream_name)
                 upstream_fields = upstream_output.model_fields
                 if field_name not in upstream_fields:

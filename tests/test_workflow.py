@@ -463,6 +463,56 @@ class TestOutputFieldRouting:
                 .build()
             )
 
+    def test_field_ref_with_config_fields_raises(self) -> None:
+        """A field-routed input has no fields to merge config into, so reject it."""
+
+        class Wrapped(BaseModel):
+            inner: NumberInput
+            note: str
+
+        class Producer(Task[NumberInput, Wrapped]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> Wrapped:
+                return Wrapped(inner=input, note="")  # pragma: no cover - never run
+
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"output field 'producer\.inner' and cannot also declare config_fields",
+        ):
+            (
+                Workflow.builder("bad")
+                .add_task(Producer)
+                .add_task(AddOne, depends_on=(Producer, "inner"), config_fields=["value"])
+                .build()
+            )
+
+    def test_named_field_ref_with_config_fields_merges(self) -> None:
+        """The suggested named-dependency form combines a routed field with config."""
+
+        class Wrapped(BaseModel):
+            number: NumberOutput
+
+        class Producer(Task[NumberInput, Wrapped]):
+            name = "producer"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> Wrapped:
+                return Wrapped(number=NumberOutput(value=input.value))
+
+        wf = (
+            Workflow.builder("ok")
+            .add_task(Producer)
+            .add_task(
+                FanInWithConfigTask,
+                depends_on={"a": (Producer, "number")},
+                config_fields=["extra"],
+            )
+            .build()
+        )
+        result = wf.run(NumberInput(value=4), task_config={"fan_in_with_config": {"extra": "x"}})
+        assert result.status == JobStatus.COMPLETED
+        assert result.result.combined == "x:4"  # type: ignore[union-attr]
+
     def test_field_ref_accepts_subclass(self) -> None:
         """Field-ref edges use type compatibility, not identity."""
 
