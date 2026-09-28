@@ -156,6 +156,19 @@ second: {<<: *merged, value: 5}
         with pytest.raises(yaml.constructor.ConstructorError, match="duplicate key"):
             _yaml_load(text)
 
+    @pytest.mark.parametrize("text", ["? [a, b]\n: 1\n", "? {a: 1}\n: 1\n"])
+    def test_unhashable_keys_are_yaml_errors(self, text: str) -> None:
+        with pytest.raises(yaml.constructor.ConstructorError, match="found unhashable key"):
+            _yaml_load(text)
+
+    def test_unhashable_key_in_input_is_config_error(self, tmp_path: Path) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path, f"workflow:\n  name: w\n  tasks:\n    - task: {THIS_MODULE}.UpperText\n"
+        )
+        in_path = _write_input_yaml(tmp_path, "? [a, b]\n: 1\n")
+        with pytest.raises(ConfigLoadError, match=r"(?s)Input YAML parse error.*unhashable key"):
+            load_workflow_from_yaml(wf_path, in_path)
+
     def test_workflow_and_input_yaml_support_merges(self, tmp_path: Path) -> None:
         workflow_path = _write_workflow_yaml(
             tmp_path,

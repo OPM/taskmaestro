@@ -119,7 +119,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                 if key_node.tag == "tag:yaml.org,2002:merge"
                 else self.construct_object(key_node)
             )
-            if key in keys:
+            try:
+                is_duplicate = key in keys
+            except TypeError as exc:
+                # Match PyYAML's own error for unhashable keys (e.g. ``? [a, b]``).
+                raise yaml.constructor.ConstructorError(
+                    "while constructing a mapping",
+                    node.start_mark,
+                    f"found unhashable key ({exc})",
+                    key_node.start_mark,
+                ) from exc
+            if is_duplicate:
                 raise yaml.constructor.ConstructorError(
                     "while constructing a mapping",
                     node.start_mark,
