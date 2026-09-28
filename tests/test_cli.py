@@ -55,6 +55,13 @@ class Fail(Task[NumberInput, NumberOutput]):
 
     def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
         raise ValueError("intentional failure")
+
+class Noisy(Task[NumberInput, NumberOutput]):
+    name = "noisy"
+
+    def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+        print("task diagnostic")
+        return NumberOutput(value=input.value)
 """,
         encoding="utf-8",
     )
@@ -113,6 +120,185 @@ def test_validate_reports_success(tmp_path: Path, capsys: object) -> None:
     assert sys.path == original_path
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Workflow 'cli_test' is valid" in captured.out
+
+
+def test_validate_json_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workflow, input_path = _files(tmp_path)
+
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"status": "valid", "workflow": "cli_test"}
+    assert captured.err == ""
+
+
+def test_run_json_success(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workflow, input_path = _files(tmp_path)
+
+    assert main(["run", str(workflow), "--input", str(input_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "completed",
+        "workflow": "cli_test",
+        "result": {"value": 5},
+    }
+    assert captured.err == ""
+
+
+def test_run_json_redirects_task_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path, "Noisy")
+
+    assert main(["run", str(workflow), "--input", str(input_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["result"] == {"value": 4}
+    assert "task diagnostic" in captured.err
+
+
+def test_run_json_failure(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    workflow, input_path = _files(tmp_path, "Fail")
+
+    assert main(["run", str(workflow), "--input", str(input_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "failed",
+        "workflow": "cli_test",
+        "failed_task": "fail",
+        "error": {
+            "code": "task_failed",
+            "type": "ValueError",
+            "message": "Task failed",
+            "task": "fail",
+            "field": None,
+            "issues": [],
+        },
+    }
+    assert captured.err == ""
+
+
+def test_run_json_validation_failure_omits_input_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    input_path.write_text("increment:\n  value: secret-value\n", encoding="utf-8")
+
+    assert main(["run", str(workflow), "--input", str(input_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    assert "secret-value" not in captured.out + captured.err
+    result = json.loads(captured.out)
+    assert result["failed_task"] == "increment"
+    assert result["error"]["type"] == "ValidationError"
+    assert result["error"]["field"] == "value"
+    assert result["error"]["issues"] == [{"field": "value", "code": "int_parsing"}]
+
+
+def test_validate_json_redirects_import_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    (tmp_path / "pipeline.py").write_text(
+        (tmp_path / "pipeline.py").read_text(encoding="utf-8") + "\nprint('import diagnostic')\n",
+        encoding="utf-8",
+    )
+    sys.modules.pop("pipeline", None)
+
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["status"] == "valid"
+    assert "import diagnostic" in captured.err
+
+
+def test_validate_json_configuration_failure(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    input_path.write_text("{}\n", encoding="utf-8")
+
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "status": "invalid",
+        "error": {
+            "code": "configuration_error",
+            "type": "ConfigLoadError",
+            "message": "Workflow configuration is invalid",
+            "task": None,
+            "field": None,
+            "issues": [],
+        },
+    }
+    assert captured.err == ""
+
+
+def test_validate_json_missing_config_identifies_task_and_field(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    workflow.write_text(
+        "workflow:\n  name: cli_test\n  tasks:\n"
+        "    - task: pipeline.Increment\n      config_fields: [value]\n",
+        encoding="utf-8",
+    )
+    input_path.write_text("{}\n", encoding="utf-8")
+
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"]["task"] == "increment"
+    assert result["error"]["field"] == "value"
+    assert result["error"]["issues"] == [{"field": "value", "code": "missing"}]
+
+
+def test_validate_json_schema_failure_omits_input_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8") + "runner:\n  timeout_seconds: secret-value\n",
+        encoding="utf-8",
+    )
+
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 2
+    captured = capsys.readouterr()
+    assert "secret-value" not in captured.out + captured.err
+    result = json.loads(captured.out)
+    assert result["error"]["field"] == "runner.timeout_seconds"
+    assert result["error"]["issues"][0]["code"] == "float_parsing"
+
+
+def test_run_json_unserializable_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "opaque_pipeline.py").write_text(
+        """\
+from taskmaestro import EmptyConfig, ExecutionContext, ObjectModel, Task
+
+class Resource:
+    pass
+
+class Handle(ObjectModel[Resource]):
+    pass
+
+class GetHandle(Task[EmptyConfig, Handle]):
+    def run(self, input: EmptyConfig, ctx: ExecutionContext) -> Handle:
+        return Handle(value=Resource())
+""",
+        encoding="utf-8",
+    )
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_text(
+        "workflow:\n  name: opaque\n  tasks:\n    - task: opaque_pipeline.GetHandle\n",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text("{}\n", encoding="utf-8")
+
+    assert main(["run", str(workflow), "--input", str(input_path), "--json"]) == 1
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["status"] == "failed"
+    assert result["error"]["code"] == "serialization_error"
+    assert result["failed_task"] is None
+    assert captured.err == ""
 
 
 def test_graph_prints_mermaid(tmp_path: Path, capsys: object) -> None:

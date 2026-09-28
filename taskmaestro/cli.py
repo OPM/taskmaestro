@@ -7,15 +7,17 @@ import json
 import logging
 import sys
 from collections.abc import Sequence
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import core_schema
 
 from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
 from taskmaestro.job import JobStatus
 from taskmaestro.task import get_input_type, get_output_type
 from taskmaestro.yaml_config import LoadedWorkflow, load_workflow_from_yaml
@@ -37,13 +39,84 @@ def _load(args: argparse.Namespace) -> LoadedWorkflow:
         sys.path[:] = original_path
 
 
+def _error(code: str, exc: Exception, message: str, *, task: str | None = None) -> dict[str, Any]:
+    """Return safe diagnostics from an exception and its causes."""
+    issues: list[dict[str, str]] = []
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, ValidationError):
+            issues = [
+                {"field": ".".join(map(str, issue["loc"])), "code": issue["type"]}
+                for issue in cause.errors(include_input=False, include_context=False)
+            ]
+            break
+        if isinstance(cause, WorkflowDefinitionError):
+            task = task or cause.task_name
+            issues = [{"field": field, "code": "missing"} for field in cause.fields]
+            if issues:
+                break
+        cause = cause.__cause__
+    return {
+        "code": code,
+        "type": type(exc).__name__,
+        "message": message,
+        "task": task,
+        "field": issues[0]["field"] if issues else None,
+        "issues": issues,
+    }
+
+
 def _run(args: argparse.Namespace) -> int:
     logging.basicConfig(
         level=getattr(logging, args.log_level),
         format="%(levelname)s %(name)s — %(message)s",
         force=True,
     )
-    result = _load(args).run()
+    if args.json:
+        # Plugin imports and user tasks may print; reserve stdout for one JSON document.
+        with redirect_stdout(sys.stderr):
+            result = _load(args).run()
+    else:
+        result = _load(args).run()
+    if args.json:
+        if result.status == JobStatus.FAILED:
+            assert result.exception is not None
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "workflow": result.workflow.name,
+                        "failed_task": result.failed_task,
+                        "error": _error(
+                            "task_failed", result.exception, "Task failed", task=result.failed_task
+                        ),
+                    }
+                )
+            )
+            return 1
+        assert result.result is not None
+        try:
+            with redirect_stdout(sys.stderr):
+                output = json.loads(result.result.model_dump_json())
+        except Exception as exc:
+            # Tasks may return Python-only objects; keep stdout valid JSON even then.
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "workflow": result.workflow.name,
+                        "failed_task": None,
+                        "error": _error(
+                            "serialization_error", exc, "Result is not JSON serializable"
+                        ),
+                    }
+                )
+            )
+            return 1
+        print(
+            json.dumps({"status": "completed", "workflow": result.workflow.name, "result": output})
+        )
+        return 0
     if result.status == JobStatus.FAILED:
         print(
             f"Workflow failed at {result.failed_task}: {result.error}",
@@ -56,8 +129,15 @@ def _run(args: argparse.Namespace) -> int:
 
 
 def _validate(args: argparse.Namespace) -> int:
-    loaded = _load(args)
-    print(f"Workflow '{loaded.workflow.name}' is valid")
+    if args.json:
+        with redirect_stdout(sys.stderr):
+            loaded = _load(args)
+    else:
+        loaded = _load(args)
+    if args.json:
+        print(json.dumps({"status": "valid", "workflow": loaded.workflow.name}))
+    else:
+        print(f"Workflow '{loaded.workflow.name}' is valid")
     return 0
 
 
@@ -128,10 +208,16 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
         default="INFO",
     )
+    run_parser.add_argument(
+        "--json", action="store_true", help="Print structured JSON result or error"
+    )
     run_parser.set_defaults(handler=_run)
 
     validate_parser = subparsers.add_parser("validate", help="Validate a YAML workflow")
     _add_workflow_arguments(validate_parser)
+    validate_parser.add_argument(
+        "--json", action="store_true", help="Print structured JSON result or error"
+    )
     validate_parser.set_defaults(handler=_validate)
 
     graph_parser = subparsers.add_parser("graph", help="Print a Mermaid workflow graph")
@@ -158,7 +244,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         handler: Any = args.handler
         return int(handler(args))
     except ConfigLoadError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
+        if getattr(args, "json", False) and args.command in ("run", "validate"):
+            print(
+                json.dumps(
+                    {
+                        "status": "invalid",
+                        "error": _error(
+                            "configuration_error", exc, "Workflow configuration is invalid"
+                        ),
+                    }
+                )
+            )
+        else:
+            print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
     except PluginLoadError as exc:
         print(f"Plugin error: {exc}", file=sys.stderr)

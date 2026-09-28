@@ -78,4 +78,15 @@ If tasks are published by an installed package through the `taskmaestro.tasks` e
 
 The list command returns a sorted JSON object such as `{"tasks": ["acme.prepare"]}`. The describe command returns the chosen task's `identifier`, `name`, `timeout_seconds`, and Pydantic `input_schema` / `output_schema` JSON Schema objects. Fields containing runtime-only Python objects are marked `x-taskmaestro-opaque` and `x-taskmaestro-python-type`, with `"not": {}` because no JSON value can satisfy them; route these values from upstream tasks rather than inventing JSON input. Replace `acme.prepare` with an identifier from your list; if you have no installed task plugins, the list is empty. The example tasks above are **local Python classes**, not installed plugins, so they will not appear in `tasks list`.
 
+## Parse results and errors as JSON
+
+Use `--json` with `validate` and `run` when you need a stable response instead of parsing text from stderr:
+
+```bash
+.venv/bin/python -m taskmaestro validate examples/agent_quickstart/workflow.yaml --input examples/agent_quickstart/input.yaml --json
+.venv/bin/python -m taskmaestro run examples/agent_quickstart/workflow.yaml --input examples/agent_quickstart/input.yaml --json
+```
+
+Validation returns `{"status": "valid", "workflow": "agent_quickstart"}`; a successful run returns `{"status": "completed", "workflow": "agent_quickstart", "result": {"value": 12}}`. On failure, stdout contains a single JSON object with status `invalid` (configuration error) or `failed` (execution/serialization error), and an `error` containing `code`, `type`, `message`, `task`, `field`, and `issues`. Missing metadata is `null` or an empty list. Exit codes are 0 for success, 1 for a task/serialization failure, and 2 for an invalid configuration. Error messages omit raw exception details and input values; stderr may still contain application logs or prints. See the [CLI section of the README](../README.md#command-line-interface) for the full contract.
+
 For fan-in, collections, mapping, nested workflows, and the Python builder API, see the [README](../README.md) and the other examples under `examples/`.
