@@ -910,10 +910,26 @@ class WorkflowBuilder:
         return self
 
     def build(self) -> Workflow:
-        """Finalize and validate the workflow. Returns an immutable Workflow."""
-        # Resolve result_task ref
+        """Finalize and validate the workflow.
+
+        Returns an independent snapshot of the builder's current state: later
+        calls on this builder never modify an already built workflow, and
+        calling ``build()`` again yields a new, separately validated one.
+        """
+        source = self._workflow
+        workflow = Workflow.__new__(Workflow)
+        workflow.name = source.name
+        workflow._tasks = dict(source._tasks)
+        # Fan-in dicts are copied because validation may rewrite their entries.
+        workflow._dependencies = {
+            name: dict(deps) if isinstance(deps, dict) else deps
+            for name, deps in source._dependencies.items()
+        }
+        workflow._config_fields = {
+            name: set(fields) for name, fields in source._config_fields.items()
+        }
+        workflow._task_maps = dict(source._task_maps)
         ref = self._result_task_ref
-        if ref is not None:
-            self._workflow._result_task_name = self._resolve_dep_ref(ref)
-        self._workflow._validate()
-        return self._workflow
+        workflow._result_task_name = self._resolve_dep_ref(ref) if ref is not None else None
+        workflow._validate()
+        return workflow

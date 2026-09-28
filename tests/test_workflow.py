@@ -275,6 +275,67 @@ class TestTaskHandles:
         assert workflow.result_task_name == "add_one"
 
 
+class TestBuilderSnapshot:
+    """build() returns an independent workflow, not the builder's live state."""
+
+    def test_builder_changes_after_build_do_not_leak(self) -> None:
+        builder = Workflow.builder("snapshot")
+        builder.add_task(AddOne)
+        workflow = builder.build()
+
+        builder.add_task(Double, depends_on=AddOne)
+
+        assert [name for name, _ in workflow.topological_order()] == ["add_one"]
+        assert workflow.result_task_name == "add_one"
+        result = workflow.run(NumberInput(value=1))
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == NumberOutput(value=2)
+
+    def test_builder_can_be_extended_and_rebuilt(self) -> None:
+        builder = Workflow.builder("rebuild")
+        builder.add_task(AddOne)
+        first = builder.build()
+        builder.add_task(Double, depends_on=AddOne)
+        second = builder.build()
+
+        assert first is not second
+        assert first.result_task_name == "add_one"
+        assert second.result_task_name == "double"
+        assert second.run(NumberInput(value=1)).result == NumberOutput(value=4)
+
+    def test_validation_rewrites_do_not_touch_builder_state(self) -> None:
+        """Mapped fan-in unwrapping rewrites the built workflow's own dependency copy."""
+        from taskmaestro import MappedOutput, TaskMap
+
+        class ItemInput(BaseModel):
+            key: str
+            value: int
+
+        class Item(Task[ItemInput, NumberOutput]):
+            name = "item"
+
+            def run(self, input: ItemInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)  # pragma: no cover - never run
+
+        class SumInput(BaseModel):
+            values: dict[str, NumberOutput]
+
+        class Sum(Task[SumInput, NumberOutput]):
+            name = "sum"
+
+            def run(self, input: SumInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=0)  # pragma: no cover - never run
+
+        builder = Workflow.builder("mapped")
+        builder.add_task(Item, mapped_over=TaskMap("items", "key", "value"))
+        builder.add_task(Sum, depends_on={"values": Item})
+        workflow = builder.build()
+
+        assert workflow.get_dependencies("sum") == {"values": ("item", "root")}
+        assert builder._workflow.get_dependencies("sum") == {"values": "item"}
+        assert workflow.get_output_annotation("item") == MappedOutput[NumberOutput]
+
+
 class TestDAGWorkflow:
     def test_fan_in_workflow(self) -> None:
         wf = (
