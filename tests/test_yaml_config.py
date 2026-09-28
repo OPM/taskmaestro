@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from taskmaestro import (
     JobStatus,
     Task,
 )
+from taskmaestro.hooks.base import BaseHook
 from taskmaestro.yaml_config import (
     TaskConfig,
     YamlWorkflowConfig,
@@ -40,6 +42,14 @@ class UpperText(Task[TextInput, TextOutput]):
 
     def run(self, input: TextInput, ctx: ExecutionContext) -> TextOutput:
         return TextOutput(text=input.text.upper())
+
+
+class RejectingHook(BaseHook):
+    """Hook whose constructor validates its parameters."""
+
+    def __init__(self, limit: int) -> None:
+        if limit < 0:
+            raise ValueError("limit must be >= 0")
 
 
 class ReverseText(Task[TextOutput, TextOutput]):
@@ -655,6 +665,42 @@ runner:
         in_path = _write_input_yaml(tmp_path, "upper_text:\n  text: hello\n")
         with pytest.raises(ConfigLoadError, match="Cannot instantiate hook"):
             load_workflow_from_yaml(wf_path, in_path)
+
+    @pytest.mark.parametrize(
+        ("hook", "params", "expected"),
+        [
+            (f"{THIS_MODULE}.RejectingHook", "limit: -1", "ValueError: limit must be >= 0"),
+            (
+                "taskmaestro.hooks.persistence.ResultPersistenceHook",
+                "output_dir: 5",
+                "TypeError: ",
+            ),
+        ],
+    )
+    def test_hook_constructor_errors_are_config_errors(
+        self, tmp_path: Path, hook: str, params: str, expected: str
+    ) -> None:
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: bad_hook
+  tasks:
+    - task: {THIS_MODULE}.UpperText
+runner:
+  hooks:
+    - hook: {hook}
+      params:
+        {params}
+""",
+        )
+        in_path = _write_input_yaml(tmp_path, "upper_text:\n  text: hello\n")
+        with pytest.raises(
+            ConfigLoadError, match=re.escape(f"Cannot instantiate hook '{hook}'")
+        ) as excinfo:
+            load_workflow_from_yaml(wf_path, in_path)
+        assert expected in str(excinfo.value)
+        assert excinfo.value.__cause__ is not None
 
     def test_workflow_yaml_not_a_mapping(self, tmp_path: Path) -> None:
         wf_path = _write_workflow_yaml(tmp_path, "- item1\n- item2\n")
