@@ -588,11 +588,14 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
         hook_cls = import_class(hook_config.hook)
         if not (isinstance(hook_cls, type) and issubclass(hook_cls, BaseHook)):
             raise ConfigLoadError(f"'{hook_config.hook}' is not a BaseHook subclass")
-        coerced_params = _coerce_hook_params(hook_cls, hook_config.params)
         try:
+            coerced_params = _coerce_hook_params(hook_cls, hook_config.params)
             hooks.append(hook_cls(**coerced_params))
-        except TypeError as exc:
-            raise ConfigLoadError(f"Cannot instantiate hook '{hook_config.hook}': {exc}") from exc
+        except Exception as exc:
+            # TypeError for bad parameters, but a hook's __init__ may raise anything.
+            raise ConfigLoadError(
+                f"Cannot instantiate hook '{hook_config.hook}': {type(exc).__name__}: {exc}"
+            ) from exc
 
     runner = Runner(hooks=hooks)
 
