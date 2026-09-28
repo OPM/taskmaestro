@@ -189,6 +189,25 @@ class TestMappedWorkflowValidation:
         assert workflow.get_output_annotation("mapped_number") == MappedOutput[NumberOutput]
         assert workflow.get_output_annotation("add_one") is NumberOutput
 
+    def test_mapped_task_handle_exposes_root_output_field(self) -> None:
+        builder = Workflow.builder("mapped_handles")
+        mapped = builder.task(
+            MappedOnly,
+            mapped_over=TaskMap("items", "item_name", "amount"),
+        )
+        builder.task(
+            SumAggregate,
+            depends_on={"values": mapped.field("root")},
+        )
+        workflow = builder.build()
+        job = Job(
+            workflow,
+            EmptyConfig(),
+            job_configuration=JobConfiguration({"mapped_only": {"items": {"one": 1, "two": 2}}}),
+        )
+
+        assert Runner().run(job).result == NumberOutput(value=3)
+
     @pytest.mark.parametrize("key_as,value_as", [("missing", "amount"), ("item_name", "missing")])
     def test_map_fields_must_exist(self, key_as: str, value_as: str) -> None:
         with pytest.raises(WorkflowDefinitionError, match="Map field 'missing'"):

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import types
 import typing
-from typing import TYPE_CHECKING, Any, get_args, get_origin
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args, get_origin
 
 from pydantic import BaseModel
 
@@ -14,8 +15,11 @@ if TYPE_CHECKING:
 from taskmaestro.dependencies import (
     CollectionDependency,
     CollectionRef,
+    OutputHandle,
     OutputRef,
     OutputReference,
+    TaskHandle,
+    TaskReference,
 )
 from taskmaestro.exceptions import (
     CycleDetectedError,
@@ -24,6 +28,8 @@ from taskmaestro.exceptions import (
 )
 from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.task import Task, get_input_type, get_output_type
+
+O = TypeVar("O", bound=BaseModel)
 
 # Stored dependency types after name resolution:
 #   None              — root task
@@ -637,7 +643,8 @@ class WorkflowBuilder:
         self._workflow._task_maps = {}
         self._workflow._result_task_name = None
         # Store the raw result_task ref for resolution at build() time
-        self._result_task_ref: type[Task[Any, Any]] | str | None = result_task
+        self._result_task_ref: type[Task[Any, Any]] | str | TaskHandle[Any] | None = result_task
+        self._handle_owner = object()
 
     def _resolve_dep_name(self, dep_cls: type[Task[Any, Any]]) -> str:
         """Resolve a class reference to its registered name.
@@ -660,21 +667,32 @@ class WorkflowBuilder:
             f"Use a string name to disambiguate."
         )
 
-    def _resolve_dep_ref(
-        self,
-        dep: type[Task[Any, Any]] | str,
-    ) -> str:
-        """Resolve a dependency reference (class or string) to a registered name.
+    def _resolve_dep_ref(self, dep: TaskReference) -> str:
+        """Resolve a class, name, or task handle to a registered name.
 
         String references are accepted as-is (validated at build time),
         allowing forward references to tasks not yet added.
         """
         if isinstance(dep, str):
             return dep
+        if isinstance(dep, TaskHandle):
+            self._validate_handle_owner(dep._owner)
+            if dep.name not in self._workflow._tasks:
+                raise WorkflowDefinitionError(
+                    f"Task handle '{dep.name}' is not registered in this workflow"
+                )
+            return dep.name
         return self._resolve_dep_name(dep)
+
+    def _validate_handle_owner(self, owner: object) -> None:
+        if owner is not self._handle_owner:
+            raise WorkflowDefinitionError("Task handle belongs to a different workflow builder")
 
     def _resolve_output_reference(self, ref: OutputReference) -> OutputRef:
         """Resolve a public task/output-field reference."""
+        if isinstance(ref, OutputHandle):
+            self._validate_handle_owner(ref._owner)
+            return OutputRef(ref.task_name, ref.field_name)
         if isinstance(ref, tuple):
             task_ref, output_field = ref
             return OutputRef(self._resolve_dep_ref(task_ref), output_field)
@@ -702,17 +720,7 @@ class WorkflowBuilder:
         *,
         name: str | None = None,
         depends_on: (
-            type[Task[Any, Any]]
-            | str
-            | tuple[type[Task[Any, Any]] | str, str]
-            | dict[
-                str,
-                type[Task[Any, Any]]
-                | str
-                | tuple[type[Task[Any, Any]] | str, str]
-                | CollectionDependency,
-            ]
-            | None
+            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
         ) = None,
         config_fields: list[str] | None = None,
         mapped_over: TaskMap | None = None,
@@ -724,11 +732,11 @@ class WorkflowBuilder:
 
         ``depends_on`` accepts:
         - ``None`` — root task (no upstream)
-        - ``TaskClass`` — single upstream, whole output
+        - ``TaskClass`` or ``TaskHandle`` — single upstream, whole output
         - ``"task_name"`` — single upstream by registered name
-        - ``(TaskClass | "name", "field")`` — single upstream, specific output field
-        - ``{"field": TaskClass | "name", ...}`` — fan-in, whole outputs
-        - ``{"field": (TaskClass | "name", "f"), ...}`` — fan-in with field routing
+        - ``(task_reference, "field")`` or ``handle.field("field")`` — output field
+        - ``{"field": task_reference, ...}`` — fan-in, whole outputs
+        - ``{"field": output_reference, ...}`` — fan-in with field routing
         - ``{"field": collect(...), ...}`` — collect outputs into a list or dictionary
 
         ``mapped_over`` expands this logical task over a configured mapping.
@@ -741,28 +749,36 @@ class WorkflowBuilder:
 
         if depends_on is None:
             wf._dependencies[task_name] = None
+        elif isinstance(depends_on, OutputHandle):
+            resolved = self._resolve_output_reference(depends_on)
+            wf._dependencies[task_name] = (
+                resolved.task_name,
+                cast(str, resolved.output_field),
+            )
         elif isinstance(depends_on, tuple):
             dep_ref, field = depends_on
             resolved_name = self._resolve_dep_ref(dep_ref)
             wf._dependencies[task_name] = (resolved_name, field)
-        elif isinstance(depends_on, dict):
-            resolved: dict[str, FanInValue] = {}
+        elif isinstance(depends_on, Mapping):
+            resolved_dependencies: dict[str, FanInValue] = {}
             for field, dep in depends_on.items():
                 if isinstance(dep, CollectionDependency):
-                    resolved[field] = self._resolve_collection(dep)
+                    resolved_dependencies[field] = self._resolve_collection(dep)
+                elif isinstance(dep, OutputHandle):
+                    output_ref = self._resolve_output_reference(dep)
+                    resolved_dependencies[field] = (
+                        output_ref.task_name,
+                        cast(str, output_ref.output_field),
+                    )
                 elif isinstance(dep, tuple):
                     dep_ref, dep_field = dep
                     resolved_name = self._resolve_dep_ref(dep_ref)
-                    resolved[field] = (resolved_name, dep_field)
+                    resolved_dependencies[field] = (resolved_name, dep_field)
                 else:
-                    resolved[field] = self._resolve_dep_ref(dep)
-            wf._dependencies[task_name] = resolved
-        elif isinstance(depends_on, str):
-            resolved_name = self._resolve_dep_ref(depends_on)
-            wf._dependencies[task_name] = resolved_name
+                    resolved_dependencies[field] = self._resolve_dep_ref(dep)
+            wf._dependencies[task_name] = resolved_dependencies
         else:
-            # Class reference
-            resolved_name = self._resolve_dep_name(depends_on)
+            resolved_name = self._resolve_dep_ref(depends_on)
             wf._dependencies[task_name] = resolved_name
 
         if config_fields is not None:
@@ -772,14 +788,43 @@ class WorkflowBuilder:
 
         return self
 
+    def task(
+        self,
+        task_cls: type[Task[Any, O]],
+        *,
+        name: str | None = None,
+        depends_on: (
+            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
+        ) = None,
+        config_fields: list[str] | None = None,
+        mapped_over: TaskMap | None = None,
+    ) -> TaskHandle[O]:
+        """Add a task and return an unambiguous handle to that instance.
+
+        Unlike :meth:`add_task`, this method does not return the builder and is
+        intended for local-variable-based graph construction.
+        """
+        self.add_task(
+            task_cls,
+            name=name,
+            depends_on=depends_on,
+            config_fields=config_fields,
+            mapped_over=mapped_over,
+        )
+        task_name = name if name is not None else task_cls.name
+        output_type = cast(type[BaseModel], self._workflow.get_output_annotation(task_name))
+        return TaskHandle(task_name, output_type, self._handle_owner)
+
+    def set_result_task(self, task: TaskReference) -> WorkflowBuilder:
+        """Select the result task, accepting a class, name, or task handle."""
+        self._result_task_ref = task
+        return self
+
     def build(self) -> Workflow:
         """Finalize and validate the workflow. Returns an immutable Workflow."""
         # Resolve result_task ref
         ref = self._result_task_ref
         if ref is not None:
-            if isinstance(ref, str):
-                self._workflow._result_task_name = ref
-            else:
-                self._workflow._result_task_name = self._resolve_dep_name(ref)
+            self._workflow._result_task_name = self._resolve_dep_ref(ref)
         self._workflow._validate()
         return self._workflow

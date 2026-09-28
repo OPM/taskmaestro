@@ -7,7 +7,11 @@ from pydantic import BaseModel
 
 from taskmaestro import (
     ExecutionContext,
+    Job,
+    JobStatus,
+    Runner,
     Task,
+    TaskHandle,
     Workflow,
     WorkflowDefinitionError,
 )
@@ -115,6 +119,71 @@ class TestLinearWorkflow:
             match=r"add_one outputs NumberOutput but consumer expects NumberInput",
         ):
             Workflow(name="bad", tasks=[AddOne, Consumer])
+
+
+class TestTaskHandles:
+    def test_task_adds_task_and_returns_typed_handle(self) -> None:
+        builder = Workflow.builder("handles")
+        add_one = builder.task(AddOne)
+        builder.add_task(Double, depends_on=add_one)
+        workflow = builder.build()
+
+        assert isinstance(add_one, TaskHandle)
+        assert add_one.name == "add_one"
+        assert add_one.output_type is NumberOutput
+        result = Runner().run(Job(workflow, NumberInput(value=3)))
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == NumberOutput(value=8)
+
+    def test_handles_disambiguate_repeated_task_class(self) -> None:
+        builder = Workflow.builder("named_handles")
+        first = builder.task(AddOne, name="first")
+        second = builder.task(AddOne, name="second")
+        builder.task(FanInTask, depends_on={"a": first, "b": second})
+
+        result = Runner().run(Job(builder.build(), NumberInput(value=2)))
+
+        assert result.result == FanInOutput(total=6)
+
+    def test_output_field_handle_routes_field(self) -> None:
+        class Envelope(BaseModel):
+            number: NumberOutput
+
+        class ProduceEnvelope(Task[NumberInput, Envelope]):
+            name = "produce_handle_envelope"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> Envelope:
+                return Envelope(number=NumberOutput(value=input.value + 1))
+
+        builder = Workflow.builder("field_handle")
+        envelope = builder.task(ProduceEnvelope)
+        builder.task(Double, depends_on=envelope.field("number"))
+
+        result = Runner().run(Job(builder.build(), NumberInput(value=3)))
+        assert result.result == NumberOutput(value=8)
+
+    def test_output_field_handle_rejects_unknown_field_immediately(self) -> None:
+        builder = Workflow.builder("bad_field_handle")
+        handle = builder.task(AddOne)
+
+        with pytest.raises(WorkflowDefinitionError, match="Field 'missing' not found"):
+            handle.field("missing")
+
+    def test_handle_from_another_builder_is_rejected(self) -> None:
+        first_builder = Workflow.builder("first")
+        foreign = first_builder.task(AddOne)
+        second_builder = Workflow.builder("second")
+
+        with pytest.raises(WorkflowDefinitionError, match="different workflow builder"):
+            second_builder.task(Double, depends_on=foreign)
+
+    def test_handle_can_select_result_task(self) -> None:
+        builder = Workflow.builder("explicit_result")
+        selected = builder.task(AddOne)
+        builder.task(AddOneB)
+        workflow = builder.set_result_task(selected).build()
+
+        assert workflow.result_task_name == "add_one"
 
 
 class TestDAGWorkflow:

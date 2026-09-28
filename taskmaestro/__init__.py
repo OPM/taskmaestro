@@ -3,7 +3,7 @@
 __version__ = "0.2.0"
 
 from taskmaestro.context import ExecutionContext
-from taskmaestro.dependencies import collect
+from taskmaestro.dependencies import OutputHandle, TaskHandle, collect
 from taskmaestro.discovery import (
     TASK_ENTRY_POINT_GROUP,
     WORKFLOW_ENTRY_POINT_GROUP,
@@ -59,10 +59,12 @@ __all__ = [
     "MappedOutput",
     "MappedTaskExecutionError",
     "ObjectModel",
+    "OutputHandle",
     "PluginLoadError",
     "Runner",
     "Task",
     "TaskExecutionError",
+    "TaskHandle",
     "TaskMap",
     "TaskOutputTypeError",
     "TaskResult",

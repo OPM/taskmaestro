@@ -203,6 +203,26 @@ class TestCollectionWorkflow:
         assert result.status == JobStatus.COMPLETED
         assert result.result == SurfaceNames(names=["top:top_task-4", "base:base_task-4"])
 
+    def test_keyword_collection_accepts_task_and_output_handles(self) -> None:
+        builder = Workflow.builder("handle_collection")
+        top = builder.task(ProduceSurface, name="top_task")
+        base = builder.task(ProduceEnvelope, name="base_task")
+        builder.task(
+            CollectSurfaceDict,
+            depends_on={
+                "surfaces": collect(top=top, base=base.field("surface")),
+            },
+        )
+
+        result = Runner().run(Job(builder.build(), NumberInput(value=4)))
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == SurfaceNames(names=["top:top_task-4", "base:base_task-4"])
+
+    def test_collect_rejects_mixed_positional_and_keyword_members(self) -> None:
+        with pytest.raises(TypeError, match="either positional members or keyword members"):
+            collect(ProduceSurface, top=ProduceSurface)
+
     def test_empty_list_collection(self) -> None:
         workflow = (
             Workflow.builder("empty_collection")
