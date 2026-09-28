@@ -1,0 +1,27 @@
+# Per-task configuration for the release pipeline.
+
+load_package:
+  name: taskmaestro-demo
+  version: 1.0.0
+  files:
+    src/demo.py: |
+      def greet(name: str) -> str:
+          return f"Hello {name}"
+    tests/test_demo.py: |
+      def test_greet():
+          assert True
+
+build_targets:
+  targets:
+    linux-x64:
+      operating_system: linux
+      architecture: x86_64
+      extension: tar.gz
+    windows-x64:
+      operating_system: windows
+      architecture: x86_64
+      extension: zip
+    macos-arm64:
+      operating_system: macos
+      architecture: arm64
+      extension: tar.gz

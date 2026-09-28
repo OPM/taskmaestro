@@ -1,0 +1,45 @@
+# Release pipeline using keyed collection dependencies and mapped execution.
+# Run with: python examples/release_pipeline/pipeline.py --yaml
+
+workflow:
+  name: release_pipeline
+  input_mode: per_task
+  tasks:
+    - task: pipeline.LoadPackage
+
+    - task: pipeline.RunTests
+      depends_on: pipeline.LoadPackage
+
+    - task: pipeline.RunLint
+      depends_on: pipeline.LoadPackage
+
+    - task: pipeline.CheckTypes
+      depends_on: pipeline.LoadPackage
+
+    - task: pipeline.ValidateRelease
+      depends_on:
+        package: pipeline.LoadPackage
+        checks:
+          collect:
+            tests: pipeline.RunTests
+            lint: pipeline.RunLint
+            types: pipeline.CheckTypes
+
+    - task: pipeline.BuildTarget
+      name: build_targets
+      map:
+        over: targets
+        key_as: target_name
+        value_as: settings
+        error_mode: collect_all
+      depends_on:
+        release: pipeline.ValidateRelease
+
+    - task: pipeline.CreateReleaseManifest
+      depends_on:
+        artifacts: [build_targets, root]
+
+runner:
+  hooks:
+    - hook: taskmaestro.hooks.logging.LoggingHook
+    - hook: taskmaestro.hooks.timing.TimingHook

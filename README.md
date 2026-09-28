@@ -579,13 +579,14 @@ WorkflowRunnerError (base)
 
 ## Examples
 
-Three full example pipelines are included in the `examples/` directory:
+Four full example pipelines are included in the `examples/` directory:
 
 | Example | Features |
 |---|---|
 | `examples/text_analysis/` | DAG with fan-out/fan-in, output field routing, inline `Inputs`/`Outputs` classes, YAML config, Mermaid visualization |
 | `examples/resinsight/` | `ObjectModel[T]` for gRPC objects, `JobConfiguration` with per-task config, named task instances, `config_fields`, YAML config |
 | `examples/image_processing/` | Nested workflows through `Workflow.as_task()` and YAML `workflow:`, typed boundaries, expanded Mermaid subgraph |
+| `examples/release_pipeline/` | Keyed `collect()` dependencies, mapped tasks, mapped output routing, per-task YAML config |
 
 Run an example:
 
