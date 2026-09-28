@@ -191,25 +191,27 @@ class TestMappedWorkflowValidation:
 
     def test_mapped_task_output_is_automatically_unwrapped(self) -> None:
         builder = Workflow.builder("mapped_handles")
+        base = builder.task(AddOne)
         mapped = builder.map_task(
-            MappedOnly,
+            MappedNumber,
             over="items",
             key_as="item_name",
             value_as="amount",
+            config_fields=["multiplier"],
+            base=base,
         )
-        builder.task(
-            SumAggregate,
-            depends_on={"values": mapped},
-        )
+        builder.task(SumAggregate, values=mapped)
         workflow = builder.build()
         job = Job(
             workflow,
-            EmptyConfig(),
-            job_configuration=JobConfiguration({"mapped_only": {"items": {"one": 1, "two": 2}}}),
+            NumberInput(value=10),
+            job_configuration=JobConfiguration(
+                {"mapped_number": {"items": {"one": 1, "two": 2}, "multiplier": 2}}
+            ),
         )
 
-        assert workflow.get_dependencies("sum_aggregate") == {"values": ("mapped_only", "root")}
-        assert Runner().run(job).result == NumberOutput(value=3)
+        assert workflow.get_dependencies("sum_aggregate") == {"values": ("mapped_number", "root")}
+        assert Runner().run(job).result == NumberOutput(value=28)
 
     @pytest.mark.parametrize("key_as,value_as", [("missing", "amount"), ("item_name", "missing")])
     def test_map_fields_must_exist(self, key_as: str, value_as: str) -> None:

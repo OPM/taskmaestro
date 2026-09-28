@@ -838,12 +838,21 @@ class WorkflowBuilder:
         ) = None,
         config_fields: list[str] | None = None,
         mapped_over: TaskMap | None = None,
+        **input_dependencies: OutputReference | CollectionDependency,
     ) -> TaskHandle[O]:
         """Add a task and return an unambiguous handle to that instance.
 
         Unlike :meth:`add_task`, this method does not return the builder and is
-        intended for local-variable-based graph construction.
+        intended for local-variable-based graph construction. Named input
+        dependencies may be passed directly as keyword arguments instead of
+        through ``depends_on``.
         """
+        if input_dependencies:
+            if depends_on is not None:
+                raise WorkflowDefinitionError(
+                    "Use either depends_on or keyword input dependencies, not both"
+                )
+            depends_on = input_dependencies
         self.add_task(
             task_cls,
             name=name,
@@ -868,6 +877,7 @@ class WorkflowBuilder:
             OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
         ) = None,
         config_fields: list[str] | None = None,
+        **input_dependencies: OutputReference | CollectionDependency,
     ) -> TaskHandle[MappedOutput[O]]:
         """Add a task mapped over configured items and return its handle."""
         handle = self.task(
@@ -881,6 +891,7 @@ class WorkflowBuilder:
                 value_as=value_as,
                 error_mode=error_mode,
             ),
+            **input_dependencies,
         )
         return cast(TaskHandle[MappedOutput[O]], handle)
 
