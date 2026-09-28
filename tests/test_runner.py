@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import BaseModel, ConfigDict, ValidationError
 
@@ -16,6 +18,7 @@ from taskmaestro import (
     Workflow,
 )
 from taskmaestro.exceptions import JobStateError
+from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import TaskStatus
 from tests.conftest import (
     AddOne,
@@ -102,6 +105,70 @@ class TestFailurePaths:
         runner.run(job, ctx=ctx)
         with pytest.raises(JobStateError, match="Cannot run job"):
             runner.run(job, ctx=ctx)
+
+    def test_invalid_config_value_fails_job(self, ctx: ExecutionContext) -> None:
+        """Input validation errors are task failures, not escaping exceptions."""
+        wf = (
+            Workflow.builder("merge")
+            .add_task(AddOne)
+            .add_task(MergeTask, depends_on=AddOne, config_fields=["label"])
+            .build()
+        )
+        jc = JobConfiguration({"merge_task": {"label": ["not", "a", "string"]}})
+        events: list[str] = []
+
+        class Recorder(BaseHook):
+            def on_task_start(self, job: Job[Any], task: Task[Any, Any]) -> None:
+                events.append(f"task_start:{task.name}")
+
+            def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
+                events.append(f"task_fail:{task.name}")
+
+            def on_job_fail(self, job: Job[Any]) -> None:
+                events.append("job_fail")
+
+        job = Job(wf, NumberInput(value=1), job_configuration=jc)
+        result = Runner(hooks=[Recorder()]).run(job, ctx=ctx)
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "merge_task"
+        assert isinstance(result.exception, ValidationError)
+        assert result.completed_at is not None
+        assert [r.status for r in result.task_results] == [
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+        ]
+        assert events[-3:] == ["task_start:merge_task", "task_fail:merge_task", "job_fail"]
+
+    def test_task_constructor_failure_fails_job(self, ctx: ExecutionContext) -> None:
+        """A task whose constructor raises fails the job without a TASK_FAIL event."""
+
+        class BrokenInit(Task[NumberInput, NumberOutput]):
+            name = "broken_init"
+
+            def __init__(self) -> None:
+                raise RuntimeError("cannot construct")
+
+            def run(
+                self, input: NumberInput, ctx: ExecutionContext
+            ) -> NumberOutput:  # pragma: no cover - never constructed
+                return NumberOutput(value=input.value)
+
+        events: list[str] = []
+
+        class Recorder(BaseHook):
+            def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
+                events.append("task_fail")  # pragma: no cover - must not be called
+
+            def on_job_fail(self, job: Job[Any]) -> None:
+                events.append("job_fail")
+
+        job = Job(Workflow(name="test", tasks=[BrokenInit]), NumberInput(value=1))
+        result = Runner(hooks=[Recorder()]).run(job, ctx=ctx)
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "broken_init"
+        assert result.error == "cannot construct"
+        assert result.task_results[0].task_name == "broken_init"
+        assert events == ["job_fail"]
 
     def test_failed_task_results(self, ctx: ExecutionContext) -> None:
         wf = Workflow(name="test", tasks=[FailingTask])
@@ -665,8 +732,11 @@ class TestConfigFieldsExecution:
         wf = Workflow.builder("strict").add_task(StrictTask, config_fields=["path"]).build()
         jc = JobConfiguration({"strict_task": {"path": "/data", "unexpected": 1}})
         job = Job(wf, EmptyConfig(), job_configuration=jc)
-        with pytest.raises(ValidationError, match="unexpected"):
-            Runner().run(job, ctx=ctx)
+        result = Runner().run(job, ctx=ctx)
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "strict_task"
+        assert isinstance(result.exception, ValidationError)
+        assert "unexpected" in (result.error or "")
 
     def test_backward_compat_no_config(self, ctx: ExecutionContext) -> None:
         """Workflow without config_fields runs normally."""

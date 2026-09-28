@@ -107,8 +107,6 @@ class Runner:
 
         try:
             for task_name, task_cls in workflow.topological_order():
-                task = task_cls()
-                task.name = task_name  # instance-level override for named instances
                 deps = workflow.get_dependencies(task_name)
                 config_fields = workflow.get_config_fields(task_name)
                 task_map = workflow.get_task_map(task_name)
@@ -125,59 +123,15 @@ class Runner:
                     if task_map is None or key != task_map.over
                 }
 
-                # Assemble input based on dependency type. Mapped tasks build
-                # one validated input per configured item below.
-                if task_map is not None:
-                    task_input: Any = None
-                elif deps is None:
-                    if config_values:
-                        # Root task with config: build input from config values
-                        input_type = get_input_type(task_cls)
-                        task_input = input_type.model_validate(config_values)
-                    else:
-                        task_input = job.config
-                elif isinstance(deps, str):
-                    if config_values:
-                        # Single dep with config: decompose upstream, merge with config
-                        input_type = get_input_type(task_cls)
-                        upstream_output = outputs[deps]
-                        assert isinstance(upstream_output, BaseModel)
-                        upstream_data = upstream_output.model_dump()
-                        down_fields = input_type.model_fields
-                        merged: dict[str, object] = {
-                            k: v for k, v in upstream_data.items() if k in down_fields
-                        }
-                        merged.update(config_values)
-                        task_input = input_type.model_validate(merged)
-                    else:
-                        task_input = outputs[deps]
-                elif isinstance(deps, tuple):
-                    upstream_name, field_name = deps
-                    task_input = getattr(outputs[upstream_name], field_name)
-                elif isinstance(deps, dict):
-                    input_type = get_input_type(task_cls)
-                    field_values: dict[str, object] = {}
-                    for fname, upstream_ref in deps.items():
-                        if isinstance(upstream_ref, CollectionRef):
-                            field_values[fname] = self._resolve_collection(upstream_ref, outputs)
-                        elif isinstance(upstream_ref, tuple):
-                            up_name, up_field = upstream_ref
-                            field_values[fname] = getattr(outputs[up_name], up_field)
-                        else:
-                            field_values[fname] = outputs[upstream_ref]
-                    if config_values:
-                        field_values.update(config_values)
-                    task_input = input_type.model_validate(field_values)
-                else:
-                    task_input = job.config  # pragma: no cover
-
                 task_started = datetime.now()
-                self._emit(Event.TASK_START, job, task)
-
+                task: Task[Any, Any] | None = None
                 try:
-                    # Arming happens inside the guarded block so that an expired
-                    # job deadline or an unusable timer is recorded as a task
+                    # Instantiation, input assembly and arming all happen inside
+                    # the guarded block so that any failure is recorded as a task
                     # failure rather than escaping with the job left RUNNING.
+                    task = task_cls()
+                    task.name = task_name  # instance-level override for named instances
+                    self._emit(Event.TASK_START, job, task)
                     deadline.check()
                     if task_map is not None:
                         output = self._run_mapped_task(
@@ -193,6 +147,9 @@ class Runner:
                             deadline,
                         )
                     else:
+                        task_input = self._build_task_input(
+                            job, task_cls, deps, config_values, outputs
+                        )
                         self._arm(task.timeout_seconds, task.name, deadline)
                         output = task.run(task_input, ctx)
 
@@ -205,10 +162,10 @@ class Runner:
                             )
 
                     duration = (datetime.now() - task_started).total_seconds()
-                    outputs[task.name] = output
+                    outputs[task_name] = output
                     job.task_results.append(
                         TaskResult(
-                            task_name=task.name,
+                            task_name=task_name,
                             status=TaskStatus.COMPLETED,
                             output=output,
                             started_at=task_started,
@@ -221,11 +178,11 @@ class Runner:
                     job.status = JobStatus.FAILED
                     job.error = str(exc)
                     job.exception = exc
-                    job.failed_task = task.name
+                    job.failed_task = task_name
                     job.completed_at = datetime.now()
                     job.task_results.append(
                         TaskResult(
-                            task_name=task.name,
+                            task_name=task_name,
                             status=TaskStatus.FAILED,
                             output=None,
                             started_at=task_started,
@@ -233,7 +190,10 @@ class Runner:
                             error=str(exc),
                         )
                     )
-                    self._emit(Event.TASK_FAIL, job, task, exc)
+                    # Without an instance (the constructor raised) there is no
+                    # task to report; the job-level failure is still emitted.
+                    if task is not None:
+                        self._emit(Event.TASK_FAIL, job, task, exc)
                     self._emit(Event.JOB_FAIL, job)
                     return job
                 finally:
@@ -247,6 +207,57 @@ class Runner:
         job.completed_at = datetime.now()
         self._emit(Event.JOB_COMPLETE, job)
         return job
+
+    @staticmethod
+    def _build_task_input(
+        job: Job[Any],
+        task_cls: type[Task[Any, Any]],
+        deps: Any,
+        config_values: dict[str, Any],
+        outputs: dict[str, BaseModel],
+    ) -> Any:
+        """Assemble one (unmapped) task's input from upstream outputs and config."""
+        if deps is None:
+            if config_values:
+                # Root task with config: build input from config values
+                return get_input_type(task_cls).model_validate(config_values)
+            return job.config
+        if isinstance(deps, str):
+            if not config_values:
+                return outputs[deps]
+            # Single dep with config: decompose upstream, merge with config
+            input_type = get_input_type(task_cls)
+            upstream_data = outputs[deps].model_dump()
+            down_fields = input_type.model_fields
+            merged: dict[str, object] = {
+                k: v for k, v in upstream_data.items() if k in down_fields
+            }
+            merged.update(config_values)
+            return input_type.model_validate(merged)
+        if isinstance(deps, tuple):
+            upstream_name, field_name = deps
+            return getattr(outputs[upstream_name], field_name)
+        # Fan-in: one named input field per upstream reference.
+        field_values = Runner._resolve_named_dependencies(deps, outputs)
+        field_values.update(config_values)
+        return get_input_type(task_cls).model_validate(field_values)
+
+    @staticmethod
+    def _resolve_named_dependencies(
+        deps: Mapping[str, Any],
+        outputs: dict[str, BaseModel],
+    ) -> dict[str, object]:
+        """Resolve a fan-in dependency mapping to input field values."""
+        values: dict[str, object] = {}
+        for field_name, ref in deps.items():
+            if isinstance(ref, CollectionRef):
+                values[field_name] = Runner._resolve_collection(ref, outputs)
+            elif isinstance(ref, tuple):
+                upstream_name, output_field = ref
+                values[field_name] = getattr(outputs[upstream_name], output_field)
+            else:
+                values[field_name] = outputs[ref]
+        return values
 
     def _run_mapped_task(
         self,
@@ -334,16 +345,9 @@ class Runner:
         outputs: dict[str, BaseModel],
     ) -> dict[str, object]:
         """Resolve fields shared by every invocation of a mapped task."""
-        values: dict[str, object] = {}
-        if isinstance(deps, dict):
-            for field_name, ref in deps.items():
-                if isinstance(ref, CollectionRef):
-                    values[field_name] = self._resolve_collection(ref, outputs)
-                elif isinstance(ref, tuple):
-                    upstream_name, output_field = ref
-                    values[field_name] = getattr(outputs[upstream_name], output_field)
-                else:
-                    values[field_name] = outputs[ref]
+        values: dict[str, object] = (
+            self._resolve_named_dependencies(deps, outputs) if isinstance(deps, dict) else {}
+        )
         values.update(config_values)
         return values
 
@@ -358,18 +362,18 @@ class Runner:
             return output
         return getattr(output, ref.output_field)
 
+    @staticmethod
     def _resolve_collection(
-        self,
         collection: CollectionRef,
         outputs: dict[str, BaseModel],
     ) -> object:
         """Resolve a collection while preserving its declaration order."""
         if collection.kind == "positional":
             return [
-                self._resolve_output_ref(ref, outputs) for ref in collection.positional_members
+                Runner._resolve_output_ref(ref, outputs) for ref in collection.positional_members
             ]
         return {
-            key: self._resolve_output_ref(ref, outputs) for key, ref in collection.keyed_members
+            key: Runner._resolve_output_ref(ref, outputs) for key, ref in collection.keyed_members
         }
 
     def _arm(self, task_timeout: float | None, label: str, deadline: _Deadline) -> None:
