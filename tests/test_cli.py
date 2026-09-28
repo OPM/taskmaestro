@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from taskmaestro.cli import main
 
 
@@ -110,3 +112,18 @@ def test_configuration_errors_return_two(tmp_path: Path, capsys: object) -> None
     assert status == 2
     captured = capsys.readouterr()  # type: ignore[attr-defined]
     assert "Configuration error: Cannot read file" in captured.err
+
+
+def test_error_inside_task_module_is_configuration_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    (tmp_path / "pipeline.py").write_text("import missing_dependency_xyz\n", encoding="utf-8")
+    sys.modules.pop("pipeline", None)
+
+    status = main(["validate", str(workflow), "--input", str(input_path)])
+
+    assert status == 2
+    err = capsys.readouterr().err
+    assert "Configuration error: Error while importing module 'pipeline'" in err
+    assert "missing_dependency_xyz" in err
