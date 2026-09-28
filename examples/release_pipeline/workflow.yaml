@@ -3,7 +3,6 @@
 
 workflow:
   name: release_pipeline
-  input_mode: per_task
   tasks:
     - task: pipeline.LoadPackage
 

@@ -457,7 +457,7 @@ workflow:
 """
         )
         input_path = tmp_path / "input.yaml"
-        input_path.write_text("value: 9\n")
+        input_path.write_text("first:\n  value: 9\nsecond:\n  value: 9\n")
 
         result = load_workflow_from_yaml(workflow_path, input_path).run()
 
@@ -485,7 +485,7 @@ workflow:
 """
         )
         input_path = tmp_path / "input.yaml"
-        input_path.write_text("value: 5\n")
+        input_path.write_text("top_task:\n  value: 5\nbase_task:\n  value: 5\n")
 
         result = load_workflow_from_yaml(workflow_path, input_path).run()
 
@@ -546,7 +546,7 @@ workflow:
 """
         )
         input_path = tmp_path / "input.yaml"
-        input_path.write_text("value: 1\n")
+        input_path.write_text("producer:\n  value: 1\n")
 
         with pytest.raises(ConfigLoadError, match=message):
             load_workflow_from_yaml(workflow_path, input_path)
@@ -565,7 +565,7 @@ workflow:
         input_path = tmp_path / "input.yaml"
         input_path.write_text("{}\n")
 
-        with pytest.raises(ConfigLoadError, match="no per-task input configuration"):
+        with pytest.raises(ConfigLoadError, match="missing configuration fields"):
             load_workflow_from_yaml(workflow_path, input_path)
 
     def test_duplicate_yaml_collection_key_is_rejected(self, tmp_path: Path) -> None:

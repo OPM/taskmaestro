@@ -512,8 +512,9 @@ context:
 
 ```yaml
 # input.yaml
-text: "Python is a high-level programming language..."
-title: "Python Overview"
+prepare_text:
+  text: "Python is a high-level programming language..."
+  title: "Python Overview"
 ```
 
 Load and run:
@@ -529,15 +530,16 @@ result = loaded.run()
 result = run_workflow_from_yaml("workflow.yaml", "input.yaml")
 ```
 
-YAML supports named task instances (`name:`), per-task input config (keyed by task name in the input file), fan-in dicts, and output field routing via `[task, field]` lists.
+YAML input always uses per-task configuration: every top-level key in `input.yaml` must be a registered task instance name, and its value must be a mapping or `null`. Unknown task names and scalar task values are rejected. Fields are validated against the task's input model and can configure root tasks, downstream tasks, and mapped tasks.
 
-How `input.yaml` is read is controlled by `workflow.input_mode`:
+YAML also supports named task instances (`name:`), fan-in dictionaries, and output field routing via `[task, field]` lists. Named instances use their instance name as the input key:
 
-| `input_mode` | Meaning |
-|---|---|
-| `auto` (default) | Per-task if every top-level key is a task name whose value is a mapping (or null); otherwise flat. If the file is *also* a valid input for the root task, loading fails and asks you to pick explicitly. |
-| `flat` | The whole mapping is the root task's input model. |
-| `per_task` | Top-level keys must be task names; unknown keys or non-mapping values are errors. |
+```yaml
+load_well_path_1:
+  path: first.dev
+load_well_path_2:
+  path: second.dev
+```
 
 When the same task class (or the same inner YAML file) appears more than once under different `name:`s, `depends_on` and `result_task` must use the instance name — referencing the class path is rejected as ambiguous.
 

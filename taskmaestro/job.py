@@ -100,8 +100,30 @@ class Job(Generic[C]):
         self.task_results: list[TaskResult] = []
         self.mapped_item_results: dict[str, list[TaskResult]] = {}
 
+        self._validate_task_configuration()
         self._validate_root_task_inputs(config)
         self._validate_task_maps()
+
+    def _validate_task_configuration(self) -> None:
+        """Ensure every declared configuration field has a supplied value."""
+        for task_name in self.workflow._tasks:
+            expected = self.workflow.get_config_fields(task_name)
+            if (
+                not expected
+                or self.workflow.get_dependencies(task_name) is not None
+                or self.workflow.is_mapped_task(task_name)
+            ):
+                continue
+            supplied = (
+                self.job_configuration.config_fields_for_task(task_name)
+                if self.job_configuration is not None
+                else set()
+            )
+            missing = expected - supplied
+            if missing:
+                raise WorkflowDefinitionError(
+                    f"Task '{task_name}' is missing configuration fields {sorted(missing)}"
+                )
 
     def _validate_root_task_inputs(self, config: C) -> None:
         """Validate that config type matches the input type of all root tasks."""

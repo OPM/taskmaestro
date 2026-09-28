@@ -3,4 +3,5 @@
 # Run:
 #   python examples/image_processing/pipeline.py --yaml --input input.yaml
 
-image_path: "taskmaestro.png"
+load_image:
+  image_path: "taskmaestro.png"

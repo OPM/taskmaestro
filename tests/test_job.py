@@ -118,6 +118,16 @@ class TestJobWithConfiguration:
         job = Job(workflow=wf, config=EmptyConfig(), job_configuration=jc)
         assert job.status == JobStatus.PENDING
 
+    def test_missing_declared_configuration_is_rejected(self) -> None:
+        workflow = (
+            Workflow.builder(name="cfg")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+
+        with pytest.raises(WorkflowDefinitionError, match="missing configuration fields"):
+            Job(workflow=workflow, config=EmptyConfig())
+
     def test_job_configuration_stored(self) -> None:
         wf = (
             Workflow.builder(name="cfg")
