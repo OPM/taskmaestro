@@ -127,3 +127,42 @@ def test_error_inside_task_module_is_configuration_error(
     err = capsys.readouterr().err
     assert "Configuration error: Error while importing module 'pipeline'" in err
     assert "missing_dependency_xyz" in err
+
+
+@pytest.mark.parametrize("module", ["taskmaestro", "taskmaestro.cli"])
+def test_module_entry_points_run_the_cli(
+    module: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``python -m taskmaestro`` and ``python -m taskmaestro.cli`` invoke main()."""
+    import runpy
+    import warnings
+
+    workflow, input_path = _files(tmp_path)
+    monkeypatch.setattr(
+        sys, "argv", [module, "validate", str(workflow), "--input", str(input_path)]
+    )
+    with warnings.catch_warnings():
+        # Re-executing an already imported module as __main__ warns; that is expected here.
+        warnings.simplefilter("ignore", RuntimeWarning)
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module(module, run_name="__main__", alter_sys=True)
+    assert excinfo.value.code == 0
+    assert "Workflow 'cli_test' is valid" in capsys.readouterr().out
+
+
+def test_python_dash_m_exit_code(tmp_path: Path) -> None:
+    """The real interpreter invocation propagates main()'s exit status."""
+    import subprocess
+
+    workflow, input_path = _files(tmp_path, "Fail")
+    completed = subprocess.run(
+        [sys.executable, "-m", "taskmaestro", "run", str(workflow), "--input", str(input_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 1
+    assert "Workflow failed at fail: intentional failure" in completed.stderr

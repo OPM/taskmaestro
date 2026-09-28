@@ -99,3 +99,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigLoadError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
