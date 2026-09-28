@@ -307,7 +307,7 @@ class Workflow:
         Both ``Workflow(tasks=[...])`` and ``WorkflowBuilder.add_task`` check
         before inserting into ``_tasks``, so by the time validation runs the
         mapping is guaranteed to be unique.  Kept as an explicit step so the
-        validation order documented in CLAUDE.md remains visible here.
+        validation order documented in AGENTS.md remains visible here.
         """
 
     def _validate_references(self) -> None:

@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Typed DAG task workflow library with Pydantic models, lifecycle hooks, and fail-fast semantics.
 

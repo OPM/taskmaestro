@@ -38,7 +38,7 @@ Issues = "https://github.com/OPM/taskmaestro/issues"
 
 [tool.hatch.build.targets.sdist]
 exclude = [
-    "CLAUDE.md",
+    "AGENTS.md",
 ]
 
 [tool.hatch.build.targets.wheel]
