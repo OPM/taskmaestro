@@ -214,6 +214,27 @@ class TestTaskHandles:
         result = Runner().run(Job(builder.build(), NumberInput(value=3)))
         assert result.result == NumberOutput(value=8)
 
+    def test_output_field_handle_can_be_used_in_fan_in(self) -> None:
+        class Envelope(BaseModel):
+            number: NumberOutput
+
+        class ProduceEnvelope(Task[NumberInput, Envelope]):
+            name = "produce_fan_in_envelope"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> Envelope:
+                return Envelope(number=NumberOutput(value=input.value + 1))
+
+        builder = Workflow.builder("field_handle_fan_in")
+        envelope = builder.task(ProduceEnvelope)
+        other = builder.task(AddOneB)
+        builder.task(
+            FanInTask,
+            depends_on={"a": envelope.field("number"), "b": other},
+        )
+
+        result = builder.build().run(NumberInput(value=3))
+        assert result.result == FanInOutput(total=8)
+
     def test_output_field_handle_rejects_unknown_field_immediately(self) -> None:
         builder = Workflow.builder("bad_field_handle")
         handle = builder.task(AddOne)

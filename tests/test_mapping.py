@@ -189,7 +189,7 @@ class TestMappedWorkflowValidation:
         assert workflow.get_output_annotation("mapped_number") == MappedOutput[NumberOutput]
         assert workflow.get_output_annotation("add_one") is NumberOutput
 
-    def test_mapped_task_handle_exposes_root_output_field(self) -> None:
+    def test_mapped_task_output_is_automatically_unwrapped(self) -> None:
         builder = Workflow.builder("mapped_handles")
         mapped = builder.task(
             MappedOnly,
@@ -197,7 +197,7 @@ class TestMappedWorkflowValidation:
         )
         builder.task(
             SumAggregate,
-            depends_on={"values": mapped.field("root")},
+            depends_on={"values": mapped},
         )
         workflow = builder.build()
         job = Job(
@@ -206,6 +206,7 @@ class TestMappedWorkflowValidation:
             job_configuration=JobConfiguration({"mapped_only": {"items": {"one": 1, "two": 2}}}),
         )
 
+        assert workflow.get_dependencies("sum_aggregate") == {"values": ("mapped_only", "root")}
         assert Runner().run(job).result == NumberOutput(value=3)
 
     @pytest.mark.parametrize("key_as,value_as", [("missing", "amount"), ("item_name", "missing")])

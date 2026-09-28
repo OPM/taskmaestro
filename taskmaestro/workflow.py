@@ -523,6 +523,15 @@ class Workflow:
                         resolved_type = up_fields[up_field].annotation
                     else:
                         resolved_type = self.get_output_annotation(upstream_ref)
+                        if self.is_mapped_task(upstream_ref) and not _is_type_compatible(
+                            resolved_type, field_annotation
+                        ):
+                            root_type = resolved_type.model_fields["root"].annotation
+                            if root_type is not None and _is_type_compatible(
+                                root_type, field_annotation
+                            ):
+                                deps[field_name] = (upstream_ref, "root")
+                                resolved_type = root_type
                     if (
                         field_annotation is not None
                         and resolved_type is not None

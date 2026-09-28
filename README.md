@@ -357,7 +357,7 @@ workflow = (
     )
     .add_task(
         CreateGrid,
-        depends_on={"surfaces": ("load_surfaces", "root")},
+        depends_on={"surfaces": "load_surfaces"},
     )
     .build()
 )
@@ -390,7 +390,8 @@ job_configuration = JobConfiguration({
 
 The logical output is a `MappedOutput[O]` Pydantic root model containing an
 insertion-ordered `dict[str, O]`, where `O` is the task's declared output type.
-Routing its `root` field lets a downstream input consume the dictionary:
+When a mapped task is connected to a named `dict[str, O]` input field, its
+`root` value is unwrapped automatically:
 
 ```python
 class CreateGridInput(BaseModel):
