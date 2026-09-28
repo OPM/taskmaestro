@@ -361,6 +361,130 @@ def test_module_entry_points_run_the_cli(
     assert "Workflow 'cli_test' is valid" in capsys.readouterr().out
 
 
+def test_workflow_describe_without_input(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, _input_path = _files(tmp_path)
+    original_path = sys.path.copy()
+
+    assert main(["workflow", "describe", str(workflow), "--json"]) == 0
+    assert sys.path == original_path
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    description = json.loads(captured.out)
+    assert description["workflow"] == "cli_test"
+    assert description["result_task"] == "increment"
+    assert len(description["tasks"]) == 1
+    task = description["tasks"][0]
+    assert task["name"] == "increment"
+    assert task["python_type"] == "pipeline.Increment"
+    assert task["depends_on"] is None
+    assert task["required_input_fields"] == ["value"]
+    assert task["config_fields"] == []
+    assert task["provided_config_fields"] is None
+    assert task["input_schema"]["properties"]["value"]["type"] == "integer"
+    assert task["output_schema"]["properties"]["value"]["type"] == "integer"
+    assert main(["workflow", "describe", str(workflow)]) == 0
+    assert json.loads(capsys.readouterr().out) == description
+
+
+def test_workflow_describe_redirects_import_stdout(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, _input_path = _files(tmp_path)
+    (tmp_path / "pipeline.py").write_text(
+        (tmp_path / "pipeline.py").read_text(encoding="utf-8") + "\nprint('import diagnostic')\n",
+        encoding="utf-8",
+    )
+    sys.modules.pop("pipeline", None)
+
+    assert main(["workflow", "describe", str(workflow), "--json"]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out)["workflow"] == "cli_test"
+    assert "import diagnostic" in captured.err
+
+
+def test_workflow_describe_with_input_does_not_execute(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path, "Fail")
+    # Inspections should not instantiate hooks or execute the task's failing run().
+    input_path.write_text("fail:\n  value: private-token\n", encoding="utf-8")
+    workflow.write_text(
+        workflow.read_text(encoding="utf-8") + "runner:\n  hooks:\n    - hook: nonexistent.hook\n",
+        encoding="utf-8",
+    )
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 0
+    description = json.loads(capsys.readouterr().out)
+    assert description["tasks"][0]["provided_config_fields"] == ["value"]
+    assert "private-token" not in json.dumps(description)
+
+
+def test_workflow_describe_missing_input_reports_json_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    input_path.write_text("{}\n", encoding="utf-8")
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "invalid"
+    assert result["error"]["code"] == "configuration_error"
+
+
+def test_workflow_describe_reports_missing_config_fields(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    workflow.write_text(
+        "workflow:\n  name: cli_test\n  tasks:\n"
+        "    - task: pipeline.Increment\n      config_fields: [value]\n",
+        encoding="utf-8",
+    )
+    input_path.write_text("{}\n", encoding="utf-8")
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["error"]["task"] == "increment"
+    assert result["error"]["issues"] == [{"field": "value", "code": "missing"}]
+
+
+def test_workflow_describe_fan_in_collections_and_mapping(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workflow = Path(__file__).resolve().parents[1] / "examples/release_pipeline/workflow.yaml"
+
+    # Earlier CLI tests import a different local module also named "pipeline".
+    with monkeypatch.context() as patch:
+        patch.delitem(sys.modules, "pipeline", raising=False)
+        assert main(["workflow", "describe", str(workflow), "--json"]) == 0
+        patch.delitem(sys.modules, "pipeline", raising=False)
+    tasks = {task["name"]: task for task in json.loads(capsys.readouterr().out)["tasks"]}
+    checks = tasks["validate_release"]["depends_on"]["checks"]["collect"]
+    assert checks == {
+        "kind": "keyed",
+        "members": {
+            "tests": {"task": "run_tests", "field": None},
+            "lint": {"task": "run_lint", "field": None},
+            "types": {"task": "check_types", "field": None},
+        },
+    }
+    assert tasks["build_targets"]["map"] == {
+        "over": "targets",
+        "key_as": "target_name",
+        "value_as": "settings",
+        "error_mode": "collect_all",
+    }
+    assert tasks["create_release_manifest"]["depends_on"]["artifacts"] == {
+        "task": "build_targets",
+        "field": "root",
+    }
+    assert tasks["build_targets"]["output_schema"]["additionalProperties"] == {
+        "$ref": "#/$defs/Artifact"
+    }
+
+
 def test_tasks_list_does_not_import_plugins(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -6,8 +6,9 @@ import argparse
 import json
 import logging
 import sys
-from collections.abc import Sequence
-from contextlib import redirect_stdout
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager, redirect_stdout
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +17,13 @@ from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerati
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import core_schema
 
+from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.discovery import get_registered_task, registered_task_names
 from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
-from taskmaestro.job import JobStatus
+from taskmaestro.job import EmptyConfig, Job, JobStatus
 from taskmaestro.task import get_input_type, get_output_type
-from taskmaestro.yaml_config import LoadedWorkflow, load_workflow_from_yaml
+from taskmaestro.workflow import Workflow
+from taskmaestro.yaml_config import LoadedWorkflow, _load_workflow_only, load_workflow_from_yaml
 
 
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
@@ -28,15 +31,20 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--input", required=True, help="Path to the input YAML file")
 
 
-def _load(args: argparse.Namespace) -> LoadedWorkflow:
-    """Load YAML with its directory available for local task imports."""
-    workflow_dir = str(Path(args.workflow).resolve().parent)
+@contextmanager
+def _workflow_imports(path: str) -> Iterator[None]:
+    """Make task modules next to a YAML file importable for the duration of loading."""
     original_path = sys.path.copy()
-    sys.path.insert(0, workflow_dir)
+    sys.path.insert(0, str(Path(path).resolve().parent))
     try:
-        return load_workflow_from_yaml(args.workflow, args.input)
+        yield
     finally:
         sys.path[:] = original_path
+
+
+def _load(args: argparse.Namespace) -> LoadedWorkflow:
+    with _workflow_imports(args.workflow):
+        return load_workflow_from_yaml(args.workflow, args.input)
 
 
 def _error(code: str, exc: Exception, message: str, *, task: str | None = None) -> dict[str, Any]:
@@ -173,6 +181,95 @@ class _TaskSchemaGenerator(GenerateJsonSchema):
         }
 
 
+def _output_ref(ref: OutputRef) -> dict[str, str | None]:
+    return {"task": ref.task_name, "field": ref.output_field}
+
+
+def _dependency_spec(deps: Any) -> Any:
+    """Render validated dependencies, including field routing and collections."""
+    if deps is None:
+        return None
+    if isinstance(deps, str):
+        return {"task": deps, "field": None}
+    if isinstance(deps, tuple):
+        return {"task": deps[0], "field": deps[1]}
+    result: dict[str, Any] = {}
+    for field, ref in deps.items():
+        if isinstance(ref, CollectionRef):
+            members: list[Any] | dict[str, Any]
+            if ref.kind == "keyed":
+                members = {key: _output_ref(item) for key, item in ref.keyed_members}
+            else:
+                members = [_output_ref(item) for item in ref.positional_members]
+            result[field] = {"collect": {"kind": ref.kind, "members": members}}
+        elif isinstance(ref, OutputRef):
+            result[field] = _output_ref(ref)
+        elif isinstance(ref, tuple):
+            result[field] = {"task": ref[0], "field": ref[1]}
+        else:
+            result[field] = {"task": ref, "field": None}
+    return result
+
+
+def _workflow_description(
+    workflow: Workflow, *, configured: dict[str, list[str]] | None
+) -> dict[str, Any]:
+    tasks: list[dict[str, Any]] = []
+    for name, task in workflow.topological_order():
+        input_type = get_input_type(task)
+        output_type = workflow.get_output_annotation(name)
+        task_map = workflow.get_task_map(name)
+        tasks.append(
+            {
+                "name": name,
+                "python_type": f"{task.__module__}.{task.__qualname__}",
+                "depends_on": _dependency_spec(workflow.get_dependencies(name)),
+                "config_fields": sorted(workflow.get_config_fields(name)),
+                "provided_config_fields": configured[name] if configured is not None else None,
+                "required_input_fields": sorted(
+                    field for field, info in input_type.model_fields.items() if info.is_required()
+                ),
+                "map": asdict(task_map) if task_map is not None else None,
+                "input_schema": input_type.model_json_schema(
+                    schema_generator=_TaskSchemaGenerator
+                ),
+                "output_schema": output_type.model_json_schema(
+                    schema_generator=_TaskSchemaGenerator
+                ),
+            }
+        )
+    return {"workflow": workflow.name, "result_task": workflow.result_task_name, "tasks": tasks}
+
+
+def _workflow_describe(args: argparse.Namespace) -> int:
+    try:
+        with redirect_stdout(sys.stderr), _workflow_imports(args.workflow):
+            workflow, config = _load_workflow_only(
+                Path(args.workflow), Path(args.input) if args.input else None
+            )
+            configured = None
+            if args.input is not None:
+                assert config is not None
+                # Check supplied config without constructing hooks or executing any tasks.
+                Job(workflow, EmptyConfig(), job_configuration=config)
+                configured = {
+                    name: sorted(config.config_fields_for_task(name))
+                    for name, _task in workflow.topological_order()
+                }
+            description = _workflow_description(workflow, configured=configured)
+    except WorkflowDefinitionError as exc:
+        raise ConfigLoadError(f"Job validation failed: {exc}") from exc
+    except (
+        TypeError,
+        ValueError,
+        PydanticInvalidForJsonSchema,
+        PydanticSchemaGenerationError,
+    ) as exc:
+        raise ConfigLoadError(f"Cannot describe workflow: {exc}") from exc
+    print(json.dumps(description, indent=None if args.json else 2))
+    return 0
+
+
 def _tasks_describe(args: argparse.Namespace) -> int:
     task = get_registered_task(args.name)
     try:
@@ -234,6 +331,20 @@ def build_parser() -> argparse.ArgumentParser:
     describe_parser.add_argument("--json", action="store_true", help="Print single-line JSON")
     describe_parser.set_defaults(handler=_tasks_describe)
 
+    workflow_parser = subparsers.add_parser("workflow", help="Inspect YAML workflows")
+    workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command", required=True)
+    workflow_describe_parser = workflow_subparsers.add_parser(
+        "describe", help="Describe a workflow without running tasks"
+    )
+    workflow_describe_parser.add_argument("workflow", help="Path to the workflow YAML file")
+    workflow_describe_parser.add_argument(
+        "--input", help="Optional input YAML to check required configuration fields"
+    )
+    workflow_describe_parser.add_argument(
+        "--json", action="store_true", help="Print single-line JSON"
+    )
+    workflow_describe_parser.set_defaults(handler=_workflow_describe)
+
     return parser
 
 
@@ -244,7 +355,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         handler: Any = args.handler
         return int(handler(args))
     except ConfigLoadError as exc:
-        if getattr(args, "json", False) and args.command in ("run", "validate"):
+        if getattr(args, "json", False) and (
+            args.command in ("run", "validate")
+            or (args.command == "workflow" and args.workflow_command == "describe")
+        ):
             print(
                 json.dumps(
                     {

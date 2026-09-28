@@ -641,6 +641,7 @@ Installed packages provide a `taskmaestro` command for YAML workflows:
 taskmaestro validate workflow.yaml --input input.yaml
 taskmaestro graph workflow.yaml --input input.yaml
 taskmaestro run workflow.yaml --input input.yaml --log-level INFO
+taskmaestro workflow describe workflow.yaml --json
 ```
 
 By default, `run` prints the final output as JSON and reports errors on stderr;
@@ -676,6 +677,24 @@ from imports/tasks go to stderr, reserving stdout for the result document.
 Application code can still write directly to file descriptor 1; JSON mode is
 not a sandbox. Error objects intentionally omit raw exception messages, but
 application-generated stderr may contain sensitive data.
+
+Inspect a workflow **before its input file is complete** with
+`taskmaestro workflow describe workflow.yaml --json`. The JSON contains the
+workflow name and result task plus topologically ordered task instances. Each
+instance includes its `name`, `python_type`, `depends_on` references (`task` /
+`field`), `config_fields`, `required_input_fields`, optional `map` configuration,
+and Pydantic input/output schemas. Collection dependencies include their kind
+(`positional` or `keyed`) and member references. `python_type` identifies the
+loaded class; it may differ from the plugin entry-point identifier used in YAML.
+
+Pass `--input input.yaml` to check that required configuration fields and map
+sources are supplied. Then `provided_config_fields` lists **field names only**;
+without `--input`, it is `null`. This check does not run tasks or hooks and does
+not validate every configured value's runtime type. Loading YAML still imports
+Python modules (and nested workflows); **do not inspect untrusted YAML or plugins**
+under a privileged account. In JSON mode inspection failures have status
+`invalid`, an `error` object, and exit code 2. Without `--json`, inspection
+prints indented JSON.
 
 `python -m taskmaestro ...` is equivalent, which is useful when the scripts directory is not on `PATH`.
 
