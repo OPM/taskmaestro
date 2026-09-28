@@ -209,14 +209,21 @@ class BuildAnalysis(Task[AnalysisInput, ImageAnalysis]):
 # ---------------------------------------------------------------------------
 
 
+EXAMPLE_DIR = Path(__file__).resolve().parent
+
+
 class LoadImage(Task[ImageInput, ImagePath]):
-    """Resolve the image path to an absolute path."""
+    """Resolve the image path to an absolute path.
+
+    Relative paths are resolved against this example's directory rather than
+    the current working directory, so the example runs from anywhere.
+    """
 
     name = "load_image"
 
     def run(self, input: ImageInput, ctx: ExecutionContext) -> ImagePath:
         ctx.logger.info("Loading image path: %s", input.image_path)
-        resolved = str(Path(input.image_path).resolve())
+        resolved = str((EXAMPLE_DIR / input.image_path).resolve())
         return ImagePath(path=resolved)
 
 
@@ -303,8 +310,7 @@ def print_report(
 
 def run_python_mode() -> None:
     """Run the pipeline using the Python API."""
-    _dir = Path(__file__).resolve().parent
-    image_path = str(_dir / ".." / ".." / "taskmaestro.png")
+    image_path = "../../taskmaestro.png"  # relative to EXAMPLE_DIR
 
     # Build the outer workflow
     outer_workflow = (
@@ -345,20 +351,18 @@ def run_yaml_mode(workflow_path: str, input_path: str) -> None:
 def main() -> None:
     import argparse
 
-    _dir = Path(__file__).resolve().parent
-
     parser = argparse.ArgumentParser(description="Image Processing Pipeline example")
     parser.add_argument(
         "--yaml",
         metavar="FILE",
         nargs="?",
-        const=str(_dir / "workflow.yaml"),
+        const=str(EXAMPLE_DIR / "workflow.yaml"),
         help="Load workflow from a YAML config file (default: workflow.yaml)",
     )
     parser.add_argument(
         "--input",
         metavar="FILE",
-        default=str(_dir / "input.yaml"),
+        default=str(EXAMPLE_DIR / "input.yaml"),
         help="Input YAML file (default: input.yaml)",
     )
     args = parser.parse_args()
