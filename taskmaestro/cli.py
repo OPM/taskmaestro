@@ -6,6 +6,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from taskmaestro.exceptions import ConfigLoadError
@@ -19,7 +20,14 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _load(args: argparse.Namespace) -> LoadedWorkflow:
-    return load_workflow_from_yaml(args.workflow, args.input)
+    """Load YAML with its directory available for local task imports."""
+    workflow_dir = str(Path(args.workflow).resolve().parent)
+    original_path = sys.path.copy()
+    sys.path.insert(0, workflow_dir)
+    try:
+        return load_workflow_from_yaml(args.workflow, args.input)
+    finally:
+        sys.path[:] = original_path
 
 
 def _run(args: argparse.Namespace) -> int:
