@@ -1,0 +1,9 @@
+workflow:
+  name: agent_quickstart
+  tasks:
+    - task: tasks.AddOne
+      name: add_one
+      config_fields: [value]
+    - task: tasks.Double
+      name: double
+      depends_on: add_one
