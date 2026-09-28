@@ -78,6 +78,16 @@ If tasks are published by an installed package through the `taskmaestro.tasks` e
 
 The list command returns a sorted JSON object such as `{"tasks": ["acme.prepare"]}`. The describe command returns the chosen task's `identifier`, `name`, `timeout_seconds`, and Pydantic `input_schema` / `output_schema` JSON Schema objects. Fields containing runtime-only Python objects are marked `x-taskmaestro-opaque` and `x-taskmaestro-python-type`, with `"not": {}` because no JSON value can satisfy them; route these values from upstream tasks rather than inventing JSON input. Replace `acme.prepare` with an identifier from your list; if you have no installed task plugins, the list is empty. The example tasks above are **local Python classes**, not installed plugins, so they will not appear in `tasks list`.
 
+## Inspect a workflow before writing input
+
+Inspection needs only the workflow YAML, so use it to find required fields and routing before creating an input file:
+
+```bash
+.venv/bin/python -m taskmaestro workflow describe examples/agent_quickstart/workflow.yaml --json
+```
+
+This reports the result task `double`, a root `add_one` with `config_fields: ["value"]`, the dependency on `add_one`, and schemas for each task. Add `--input examples/agent_quickstart/input.yaml` to check that required configuration fields are present; the output includes `provided_config_fields` **names**, not their values. Inspection does not execute tasks or instantiate hooks, but it **does import Python modules** named in YAML (including nested workflows). Only inspect trusted workflow files and plugins. Runtime input values are checked when the tasks run, not completely by inspection.
+
 ## Parse results and errors as JSON
 
 Use `--json` with `validate` and `run` when you need a stable response instead of parsing text from stderr:
