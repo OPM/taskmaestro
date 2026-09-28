@@ -244,46 +244,38 @@ class CreateReleaseManifest(Task[ManifestInput, ReleaseManifest]):
 
 
 def build_workflow() -> Workflow:
-    """Build the release DAG using the Python API."""
-    return (
-        Workflow.builder("release_pipeline")
-        .add_task(
-            LoadPackage,
-            config_fields=["name", "version", "files"],
-        )
-        .add_task(RunTests, depends_on=LoadPackage)
-        .add_task(RunLint, depends_on=LoadPackage)
-        .add_task(CheckTypes, depends_on=LoadPackage)
-        .add_task(
-            ValidateRelease,
-            depends_on={
-                "package": LoadPackage,
-                "checks": collect(
-                    {
-                        "tests": RunTests,
-                        "lint": RunLint,
-                        "types": CheckTypes,
-                    }
-                ),
-            },
-        )
-        .add_task(
-            BuildTarget,
-            name="build_targets",
-            depends_on={"release": ValidateRelease},
-            mapped_over=TaskMap(
-                over="targets",
-                key_as="target_name",
-                value_as="settings",
-                error_mode="collect_all",
-            ),
-        )
-        .add_task(
-            CreateReleaseManifest,
-            depends_on={"artifacts": ("build_targets", "root")},
-        )
-        .build()
+    """Build the release DAG using unambiguous task handles."""
+    builder = Workflow.builder("release_pipeline")
+    package = builder.task(
+        LoadPackage,
+        config_fields=["name", "version", "files"],
     )
+    tests = builder.task(RunTests, depends_on=package)
+    lint = builder.task(RunLint, depends_on=package)
+    types = builder.task(CheckTypes, depends_on=package)
+    validated = builder.task(
+        ValidateRelease,
+        depends_on={
+            "package": package,
+            "checks": collect(tests=tests, lint=lint, types=types),
+        },
+    )
+    builds = builder.task(
+        BuildTarget,
+        name="build_targets",
+        depends_on={"release": validated},
+        mapped_over=TaskMap(
+            over="targets",
+            key_as="target_name",
+            value_as="settings",
+            error_mode="collect_all",
+        ),
+    )
+    builder.task(
+        CreateReleaseManifest,
+        depends_on={"artifacts": builds.field("root")},
+    )
+    return builder.build()
 
 
 def sample_job_configuration() -> JobConfiguration:
