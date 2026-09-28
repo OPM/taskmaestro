@@ -10,7 +10,9 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast, get_args, get_origin
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from taskmaestro.job import JobConfiguration
+    from taskmaestro.context import ExecutionContext
+    from taskmaestro.hooks.base import BaseHook
+    from taskmaestro.job import Job, JobConfiguration
 
 from taskmaestro.dependencies import (
     CollectionDependency,
@@ -187,6 +189,35 @@ class Workflow:
     ) -> WorkflowBuilder:
         """Return a builder for DAG construction."""
         return WorkflowBuilder(name, result_task=result_task)
+
+    def run(
+        self,
+        input: BaseModel,
+        *,
+        task_config: JobConfiguration | dict[str, dict[str, Any]] | None = None,
+        hooks: list[BaseHook] | None = None,
+        ctx: ExecutionContext | None = None,
+        timeout_seconds: float | None = None,
+    ) -> Job[Any]:
+        """Create and run a job with sensible defaults.
+
+        ``task_config`` accepts either an existing :class:`JobConfiguration`
+        or the nested dictionary used to construct one. Use :class:`Runner`
+        and :class:`Job` directly when more control over their lifecycle is
+        required.
+        """
+        from taskmaestro.job import Job, JobConfiguration
+        from taskmaestro.runner import Runner
+
+        job_configuration = (
+            task_config
+            if isinstance(task_config, JobConfiguration)
+            else JobConfiguration(task_config)
+            if task_config is not None
+            else None
+        )
+        job = Job(self, input, job_configuration=job_configuration)
+        return Runner(hooks=hooks).run(job, ctx=ctx, timeout_seconds=timeout_seconds)
 
     def topological_order(self) -> list[tuple[str, type[Task[Any, Any]]]]:
         """Return (name, task_class) pairs in a valid execution order (Kahn's algorithm)."""

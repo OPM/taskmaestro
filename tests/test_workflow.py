@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import BaseModel
 
 from taskmaestro import (
+    EmptyConfig,
     ExecutionContext,
     Job,
+    JobConfiguration,
     JobStatus,
     Runner,
     Task,
@@ -16,6 +20,7 @@ from taskmaestro import (
     WorkflowDefinitionError,
 )
 from taskmaestro.exceptions import CycleDetectedError, IncompleteInputError
+from taskmaestro.hooks.base import BaseHook
 from tests.conftest import (
     AddOne,
     AddOneB,
@@ -30,6 +35,53 @@ from tests.conftest import (
     NumberOutput,
     Stringify,
 )
+
+
+class TestWorkflowRun:
+    def test_run_executes_workflow_with_context_hooks_and_timeout(self) -> None:
+        class ContextTask(Task[NumberInput, NumberOutput]):
+            name = "context_task"
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value + ctx.resolve("offset"))
+
+        class CompleteHook(BaseHook):
+            completed = False
+
+            def on_job_complete(self, job: Job[Any]) -> None:
+                self.completed = True
+
+        workflow = Workflow("convenience", tasks=[ContextTask])
+        ctx = ExecutionContext()
+        ctx.register("offset", 2)
+        hook = CompleteHook()
+
+        result = workflow.run(
+            NumberInput(value=3),
+            hooks=[hook],
+            ctx=ctx,
+            timeout_seconds=10,
+        )
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == NumberOutput(value=5)
+        assert hook.completed
+
+    @pytest.mark.parametrize("as_object", [False, True])
+    def test_run_accepts_task_configuration_dictionary_or_object(self, as_object: bool) -> None:
+        workflow = (
+            Workflow.builder("configured_run")
+            .add_task(ConfigOnlyTask, config_fields=["path", "count"])
+            .build()
+        )
+        values = {"config_only_task": {"path": "item", "count": 2}}
+        task_config = JobConfiguration(values) if as_object else values
+
+        result = workflow.run(EmptyConfig(), task_config=task_config)
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result is not None
+        assert result.result.model_dump() == {"summary": "itemx2"}
 
 
 class TestLinearWorkflow:
@@ -176,6 +228,14 @@ class TestTaskHandles:
 
         with pytest.raises(WorkflowDefinitionError, match="different workflow builder"):
             second_builder.task(Double, depends_on=foreign)
+
+    def test_stale_handle_is_rejected(self) -> None:
+        builder = Workflow.builder("stale")
+        stale = builder.task(AddOne)
+        del builder._workflow._tasks[stale.name]
+
+        with pytest.raises(WorkflowDefinitionError, match="is not registered"):
+            builder.task(Double, depends_on=stale)
 
     def test_handle_can_select_result_task(self) -> None:
         builder = Workflow.builder("explicit_result")

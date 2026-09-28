@@ -117,6 +117,18 @@ You define **Tasks** (typed units of work), compose them into a **Workflow** (li
 | **Hooks** | Subclass `BaseHook` and override methods like `on_job_start`, `on_task_complete`, etc. Hook errors are swallowed and reported via `warnings.warn()`, so they never crash the job. Built-ins: `LoggingHook`, `TimingHook`, `ResultPersistenceHook`. |
 | **ObjectModel** | Generic `ObjectModel[T]` base model for wrapping arbitrary (non-Pydantic) objects. Enables `arbitrary_types_allowed` so fields can hold native library objects like database connections or API clients. |
 
+For common cases, run a workflow directly without constructing `Job` and `Runner`:
+
+```python
+result = workflow.run(
+    Input(value=5),
+    task_config={"configured_task": {"option": "value"}},
+    hooks=[LoggingHook()],
+)
+```
+
+The explicit `Job` and `Runner` API remains available for advanced lifecycle control.
+
 ## Task Handles
 
 `builder.task()` adds a task and returns a handle to that specific instance. Handles avoid ambiguous class and string references, especially when the same task class is registered more than once:
