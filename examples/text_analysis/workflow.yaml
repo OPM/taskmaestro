@@ -21,7 +21,6 @@ workflow:
         stop_words: pipeline.GenerateStopWords
     - task: pipeline.ScoreReadability
       depends_on: pipeline.PrepareText
-      config_fields: [text, title]
     - task: pipeline.BuildReport
       depends_on:
         stats: pipeline.ComputeWordStats

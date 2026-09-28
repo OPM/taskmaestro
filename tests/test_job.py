@@ -18,6 +18,8 @@ from tests.conftest import (
     ConfigOnlyTask,
     Double,
     FanInTask,
+    FanInWithConfigTask,
+    MergeTask,
     NumberInput,
     NumberOutput,
 )
@@ -127,6 +129,40 @@ class TestJobWithConfiguration:
 
         with pytest.raises(WorkflowDefinitionError, match="missing configuration fields"):
             Job(workflow=workflow, config=EmptyConfig())
+
+    def test_missing_configuration_on_dependent_task_is_rejected(self) -> None:
+        """Dependent tasks' config fields are checked too, not only roots'."""
+        workflow = (
+            Workflow.builder(name="cfg")
+            .add_task(AddOne)
+            .add_task(MergeTask, depends_on=AddOne, config_fields=["label"])
+            .build()
+        )
+
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"Task 'merge_task' is missing configuration fields \['label'\]",
+        ):
+            Job(workflow=workflow, config=NumberInput(value=1))
+        with pytest.raises(WorkflowDefinitionError, match="missing configuration fields"):
+            Job(
+                workflow=workflow,
+                config=NumberInput(value=1),
+                job_configuration=JobConfiguration({"merge_task": {}}),
+            )
+
+    def test_missing_configuration_on_fan_in_task_is_rejected(self) -> None:
+        workflow = (
+            Workflow.builder(name="cfg")
+            .add_task(AddOne)
+            .add_task(FanInWithConfigTask, depends_on={"a": AddOne}, config_fields=["extra"])
+            .build()
+        )
+
+        with pytest.raises(
+            WorkflowDefinitionError, match=r"missing configuration fields \['extra'\]"
+        ):
+            Job(workflow=workflow, config=NumberInput(value=1))
 
     def test_job_configuration_stored(self) -> None:
         wf = (
