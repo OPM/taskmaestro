@@ -242,13 +242,14 @@ def _load_workflow_only(
     workflow_path: Path,
     input_path: Path | None = None,
     *,
-    _ancestors: frozenset[Path] = frozenset(),
+    _ancestors: tuple[Path, ...] = (),
 ) -> tuple[Workflow, JobConfiguration | None]:
     """Build a Workflow and optional JobConfiguration from YAML files.
 
     This is the core logic shared by ``load_workflow_from_yaml`` and
     recursive ``workflow:`` references in YAML configs.  ``_ancestors`` holds
-    the resolved paths of every enclosing workflow file so that a self- or
+    the resolved paths of every enclosing workflow file, outermost first, so
+    that the reported reference chain is in nesting order and a self- or
     mutually-referencing ``workflow:`` entry is rejected instead of recursing
     without bound.
 
@@ -258,9 +259,9 @@ def _load_workflow_only(
 
     resolved_path = workflow_path.resolve()
     if resolved_path in _ancestors:
-        chain = " -> ".join(str(p) for p in (*sorted(_ancestors), resolved_path))
+        chain = " -> ".join(str(p) for p in (*_ancestors, resolved_path))
         raise ConfigLoadError(f"Recursive workflow reference: {chain}")
-    ancestors = _ancestors | {resolved_path}
+    ancestors = (*_ancestors, resolved_path)
 
     # 1. Parse workflow YAML
     try:
