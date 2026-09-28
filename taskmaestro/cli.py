@@ -202,8 +202,6 @@ def _dependency_spec(deps: Any) -> Any:
             else:
                 members = [_output_ref(item) for item in ref.positional_members]
             result[field] = {"collect": {"kind": ref.kind, "members": members}}
-        elif isinstance(ref, OutputRef):
-            result[field] = _output_ref(ref)
         elif isinstance(ref, tuple):
             result[field] = {"task": ref[0], "field": ref[1]}
         else:
