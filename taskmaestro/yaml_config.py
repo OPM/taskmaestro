@@ -147,12 +147,23 @@ def import_class(dotted_path: str) -> type[Any]:
     try:
         module = importlib.import_module(module_path)
     except ModuleNotFoundError as exc:
-        raise ConfigLoadError(f"Cannot import module '{module_path}': {exc}") from exc
+        if exc.name is not None and _is_module_or_parent(exc.name, module_path):
+            raise ConfigLoadError(f"Cannot import module '{module_path}': {exc}") from exc
+        # The module exists but one of its own imports is missing.
+        raise ConfigLoadError(f"Error while importing module '{module_path}': {exc!r}") from exc
+    except Exception as exc:
+        # SyntaxError, ImportError, or any error raised by module-level code.
+        raise ConfigLoadError(f"Error while importing module '{module_path}': {exc!r}") from exc
     try:
         cls = getattr(module, class_name)
     except AttributeError:
         raise ConfigLoadError(f"Module '{module_path}' has no attribute '{class_name}'") from None
     return cls  # type: ignore[no-any-return]
+
+
+def _is_module_or_parent(missing: str, module_path: str) -> bool:
+    """Return whether *missing* is *module_path* itself or one of its parent packages."""
+    return module_path == missing or module_path.startswith(f"{missing}.")
 
 
 def _coerce_hook_params(hook_cls: type[Any], params: dict[str, Any]) -> dict[str, Any]:

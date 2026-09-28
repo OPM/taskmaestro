@@ -188,6 +188,42 @@ class TestImportClass:
         with pytest.raises(ConfigLoadError, match="Cannot import module"):
             import_class("nonexistent.module.ClassName")
 
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            ("import missing_dependency_xyz\n", "No module named 'missing_dependency_xyz'"),
+            ("def broken(:\n", "SyntaxError"),
+            ("raise RuntimeError('module init failed')\n", "module init failed"),
+            ("from os import no_such_name\n", "ImportError"),
+        ],
+    )
+    def test_errors_inside_the_module_are_config_errors(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source: str,
+        expected: str,
+    ) -> None:
+        """Failures raised while importing an existing module are wrapped, with context."""
+        import sys
+        import zlib
+
+        module_name = f"broken_module_{zlib.crc32(source.encode())}"
+        (tmp_path / f"{module_name}.py").write_text(source, encoding="utf-8")
+        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+        with pytest.raises(ConfigLoadError) as excinfo:
+            import_class(f"{module_name}.Anything")
+        message = str(excinfo.value)
+        assert message.startswith(f"Error while importing module '{module_name}'")
+        assert expected in message
+        assert excinfo.value.__cause__ is not None
+
+    def test_missing_subpackage_is_reported_as_missing_module(self) -> None:
+        with pytest.raises(ConfigLoadError, match=r"Cannot import module 'taskmaestro\.nope'"):
+            import_class("taskmaestro.nope.ClassName")
+
     def test_nonexistent_class(self) -> None:
         with pytest.raises(ConfigLoadError, match="has no attribute"):
             import_class(f"{THIS_MODULE}.NonexistentClass")
