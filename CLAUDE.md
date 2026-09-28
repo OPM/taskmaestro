@@ -2,6 +2,8 @@
 
 Typed DAG task workflow library with Pydantic models, lifecycle hooks, and fail-fast semantics.
 
+For a runnable CLI/YAML example and the validate → graph → run loop, see [docs/agent-quickstart.md](docs/agent-quickstart.md). Run its commands from the repository root.
+
 ## Commands
 
 ```bash
@@ -21,6 +23,10 @@ mypy taskmaestro               # type check (strict mode)
 | `taskmaestro/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
 | `taskmaestro/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
 | `taskmaestro/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
+| `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles, output references, `collect()`, mapped-task configuration |
+| `taskmaestro/workflow_task.py` | Nested workflows wrapped as tasks |
+| `taskmaestro/yaml_config.py` | YAML parsing, task imports, workflow and input validation |
+| `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`), plugin entry-point discovery |
 | `taskmaestro/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
 | `taskmaestro/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
 | `taskmaestro/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
@@ -40,6 +46,6 @@ mypy taskmaestro               # type check (strict mode)
 ## Testing Conventions
 
 - Shared fixtures and reusable tasks/models in `tests/conftest.py`
-- Tests organized by module: `test_exceptions`, `test_context`, `test_task`, `test_workflow`, `test_job`, `test_runner`, `test_hooks`
+- Tests organized by module in `tests/test_*.py`, including CLI, YAML, mapping, nested workflows, and discovery
 - Timeout tests skip on non-Unix (no `signal.SIGALRM`)
 - Use `RecordingHook` pattern to assert event sequences

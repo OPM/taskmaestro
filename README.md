@@ -6,6 +6,8 @@
 
 A Python 3.12+ library for defining and executing typed DAG task workflows with Pydantic models, lifecycle hooks, and fail-fast semantics.
 
+For an agent-friendly, runnable YAML example with validation and troubleshooting steps, see the [agent quickstart](docs/agent-quickstart.md).
+
 ## Installation
 
 ```bash
