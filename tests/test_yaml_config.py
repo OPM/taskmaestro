@@ -1804,6 +1804,20 @@ workflow:
         assert "a.yaml" in str(excinfo.value)
         assert "b.yaml" in str(excinfo.value)
 
+    def test_recursive_reference_chain_is_in_nesting_order(self, tmp_path: Path) -> None:
+        """The message follows the actual reference path, not alphabetical order."""
+        for name, target in (("c", "a"), ("a", "b"), ("b", "c")):
+            self._write_yaml(
+                tmp_path / f"{name}.yaml",
+                f"workflow:\n  name: {name}\n  tasks:\n    - workflow: {target}.yaml\n",
+            )
+        in_path = self._write_yaml(tmp_path / "input.yaml", "{}\n")
+        with pytest.raises(ConfigLoadError) as excinfo:
+            load_workflow_from_yaml(tmp_path / "c.yaml", in_path)
+        root = tmp_path.resolve()
+        expected = " -> ".join(str(root / f"{n}.yaml") for n in ("c", "a", "b", "c"))
+        assert str(excinfo.value) == f"Recursive workflow reference: {expected}"
+
     def test_reuse_of_inner_workflow_is_not_a_cycle(self, tmp_path: Path) -> None:
         """Only files on the *current* nesting chain count as recursion."""
         self._write_yaml(
