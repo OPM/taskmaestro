@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import signal
+import threading
 import time
 import warnings
 from collections.abc import Mapping
@@ -40,21 +41,106 @@ class HookError(UserWarning):
     """
 
 
+@dataclass(eq=False)
+class _Timer:
+    """One armed timeout: an absolute expiry and the error to raise when it fires."""
+
+    expiry: float
+    error_type: type[TaskTimeoutError]
+    message: str
+    fired: bool = False
+
+
+class _AlarmScheduler:
+    """Multiplex the process's single ``ITIMER_REAL``/``SIGALRM`` across timers.
+
+    Nested runs (e.g. a ``workflow_task`` whose inner workflow has its own
+    timeouts) share one process timer.  Every armed timeout is registered here
+    and the OS timer always tracks the nearest pending expiry, so an inner run
+    arming or cancelling its own timers can neither extend nor cancel the
+    timeouts of an enclosing run.  The SIGALRM handler that was installed before
+    the first timer was added is restored when the last timer is removed.
+    """
+
+    def __init__(self) -> None:
+        self._timers: list[_Timer] = []
+        self._previous_handler: Any = None
+        self._installed = False
+
+    def add(self, timer: _Timer) -> None:
+        """Register *timer* and re-arm the OS timer.
+
+        Raises ``ValueError`` off the main thread (signals are delivered to the
+        main thread only) and ``AttributeError``/``OSError`` where ``SIGALRM``
+        is unavailable.
+        """
+        if threading.current_thread() is not threading.main_thread():
+            raise ValueError("signal timers only work in the main thread")
+        if not self._installed:
+            self._previous_handler = signal.signal(signal.SIGALRM, self._handle)
+            self._installed = True
+        self._timers.append(timer)
+        self._reschedule()
+
+    def remove(self, timer: _Timer) -> None:
+        """Unregister *timer*; restore the previous handler once none remain."""
+        self._timers.remove(timer)
+        if self._timers:
+            self._reschedule()
+            return
+        _start_timer(0)
+        with suppress(AttributeError, OSError, ValueError, TypeError):  # pragma: no cover
+            signal.signal(signal.SIGALRM, self._previous_handler)
+        self._previous_handler = None
+        self._installed = False
+
+    def _nearest_pending(self) -> _Timer | None:
+        pending = [timer for timer in self._timers if not timer.fired]
+        return min(pending, key=lambda timer: timer.expiry) if pending else None
+
+    def _reschedule(self) -> None:
+        nearest = self._nearest_pending()
+        if nearest is None:
+            _start_timer(0)
+        else:
+            _start_timer(max(nearest.expiry - time.monotonic(), 1e-6))
+
+    def _handle(self, signum: int, frame: Any) -> None:
+        nearest = self._nearest_pending()
+        if nearest is None:
+            return  # stale signal: every registered timer has already fired
+        nearest.fired = True
+        # The OS timer is one-shot; keep the remaining timers armed.
+        self._reschedule()
+        raise nearest.error_type(nearest.message)
+
+
+def _start_timer(seconds: float) -> None:
+    """Start (or with ``0`` cancel) the process's one-shot real-time timer."""
+    setitimer = getattr(signal, "setitimer", None)
+    if setitimer is not None:
+        setitimer(signal.ITIMER_REAL, seconds)
+    else:  # pragma: no cover - every SIGALRM platform has setitimer
+        signal.alarm(max(1, int(seconds + 0.999999)) if seconds else 0)
+
+
+_ALARMS = _AlarmScheduler()
+
+
 @dataclass
 class _Deadline:
     """Per-run timer state shared by the job and its tasks.
 
-    There is only one ``SIGALRM`` per process, so the job deadline is kept as an
-    absolute ``time.monotonic()`` timestamp and folded into every task or item
-    alarm.  Whichever deadline is nearer wins, and the job deadline is
-    re-checked before each unit of work so an inner alarm can never cancel it.
+    The job deadline is kept as an absolute ``time.monotonic()`` timestamp and
+    folded into every task or item alarm.  Whichever deadline is nearer wins,
+    and the job deadline is re-checked before each unit of work.  ``timer`` is
+    the unit of work's currently registered :class:`_Timer`, if any.
     """
 
     job_timeout: float | None = None
     job_deadline: float | None = None
     warned: bool = False
-    previous_handler: Any = field(default=None, repr=False)
-    handler_installed: bool = False
+    timer: _Timer | None = field(default=None, repr=False)
 
     def remaining(self) -> float | None:
         """Seconds left until the job deadline, or ``None`` if there is none."""
@@ -200,7 +286,6 @@ class Runner:
                     self._disarm(deadline)
         finally:
             self._disarm(deadline)
-            self._restore_handler(deadline)
 
         job.status = JobStatus.COMPLETED
         job.result = outputs[workflow.result_task_name]
@@ -400,35 +485,23 @@ class Runner:
         deadline: _Deadline | None = None,
         job_timeout: bool = False,
     ) -> bool:
-        """Install a SIGALRM handler and start a one-shot timer.
+        """Register a one-shot timeout with the process-wide alarm scheduler.
 
-        Uses ``signal.setitimer`` for sub-second precision, falling back to
-        ``signal.alarm`` where unavailable.  Returns True if the timer was set.
-        On platforms or threads where signals cannot be used, a single warning
-        is issued per run and the timeout is not enforced.
+        Uses ``signal.setitimer`` for sub-second precision.  Returns True if the
+        timer was set.  On platforms or threads where signals cannot be used, a
+        single warning is issued per run and the timeout is not enforced.
         """
         if job_timeout and deadline is not None:
             message = f"Job timed out after {deadline.job_timeout}s"
         else:
             message = f"{label} timed out after {seconds}s"
         error_type: type[TaskTimeoutError] = _JobTimeoutError if job_timeout else TaskTimeoutError
-
-        def _handler(signum: int, frame: Any) -> None:
-            raise error_type(message)
+        timer = _Timer(time.monotonic() + seconds, error_type, message)
 
         try:
-            previous = signal.signal(signal.SIGALRM, _handler)
-            if deadline is not None and not deadline.handler_installed:
-                deadline.previous_handler = previous
-                deadline.handler_installed = True
-            setitimer = getattr(signal, "setitimer", None)
-            if setitimer is not None:
-                setitimer(signal.ITIMER_REAL, max(seconds, 1e-6))
-            else:  # pragma: no cover - every SIGALRM platform has setitimer
-                signal.alarm(max(1, int(seconds + 0.999999)))
-            return True
+            _ALARMS.add(timer)
         except (AttributeError, OSError, ValueError):
-            # ValueError: signal.signal() called outside the main thread.
+            # ValueError: signals can only be used from the main thread.
             if deadline is None or not deadline.warned:
                 if deadline is not None:
                     deadline.warned = True
@@ -438,26 +511,17 @@ class Runner:
                     stacklevel=2,
                 )
             return False
+        if deadline is not None:
+            deadline.timer = timer
+        return True
 
     @staticmethod
     def _disarm(deadline: _Deadline) -> None:
-        """Cancel any pending timer without touching the handler."""
-        if not deadline.handler_installed:
+        """Cancel this run's pending timer, leaving enclosing runs' timers armed."""
+        if deadline.timer is None:
             return
-        setitimer = getattr(signal, "setitimer", None)
-        if setitimer is not None:
-            setitimer(signal.ITIMER_REAL, 0)
-        else:  # pragma: no cover
-            signal.alarm(0)
-
-    @staticmethod
-    def _restore_handler(deadline: _Deadline) -> None:
-        """Put back the SIGALRM handler that was installed before this run."""
-        if not deadline.handler_installed:
-            return
-        with suppress(AttributeError, OSError, ValueError, TypeError):  # pragma: no cover
-            signal.signal(signal.SIGALRM, deadline.previous_handler)
-        deadline.handler_installed = False
+        _ALARMS.remove(deadline.timer)
+        deadline.timer = None
 
     def _emit(self, event: Event, *args: object) -> None:
         """Dispatch event to all hooks, swallowing any hook errors.

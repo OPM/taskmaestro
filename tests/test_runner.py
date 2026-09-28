@@ -397,6 +397,99 @@ class TestTimeouts:
         not hasattr(__import__("signal"), "SIGALRM"),
         reason="signal.SIGALRM not available on this platform",
     )
+    def test_nested_run_does_not_cancel_outer_task_timeout(self, ctx: ExecutionContext) -> None:
+        """An inner workflow cancelling its own alarm must not cancel the wrapper's."""
+        import signal
+        import time
+
+        class InnerWithTimeout(Task[NumberInput, NumberOutput]):
+            name = "inner_with_timeout"
+            timeout_seconds = 30
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        class InnerSlow(Task[NumberOutput, NumberOutput]):
+            name = "inner_slow"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                time.sleep(5)
+                return input  # pragma: no cover - interrupted by the outer alarm
+
+        wrapper = Workflow(name="inner", tasks=[InnerWithTimeout, InnerSlow]).as_task(
+            name="wrapper"
+        )
+        wrapper.timeout_seconds = 0.3
+        handler_before = signal.getsignal(signal.SIGALRM)
+        job = Job(Workflow(name="outer", tasks=[wrapper]), NumberInput(value=1))
+        start = time.monotonic()
+        result = Runner().run(job, ctx=ctx)
+        assert time.monotonic() - start < 3
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "wrapper"
+        assert "wrapper timed out after 0.3s" in (result.error or "")
+        assert signal.getsignal(signal.SIGALRM) is handler_before
+        assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_nested_run_does_not_cancel_outer_job_timeout(self, ctx: ExecutionContext) -> None:
+        """The job deadline also interrupts a nested workflow that is the last task."""
+        import time
+
+        class InnerWithTimeout(Task[NumberInput, NumberOutput]):
+            name = "inner_with_timeout"
+            timeout_seconds = 30
+
+            def run(self, input: NumberInput, ctx: ExecutionContext) -> NumberOutput:
+                return NumberOutput(value=input.value)
+
+        class InnerSlow(Task[NumberOutput, NumberOutput]):
+            name = "inner_slow"
+
+            def run(self, input: NumberOutput, ctx: ExecutionContext) -> NumberOutput:
+                time.sleep(5)
+                return input  # pragma: no cover - interrupted by the job alarm
+
+        wrapper = Workflow(name="inner", tasks=[InnerWithTimeout, InnerSlow]).as_task(
+            name="wrapper"
+        )
+        job = Job(Workflow(name="outer", tasks=[wrapper]), NumberInput(value=1))
+        start = time.monotonic()
+        result = Runner().run(job, ctx=ctx, timeout_seconds=0.3)
+        assert time.monotonic() - start < 3
+        assert result.status == JobStatus.FAILED
+        assert "Job timed out after 0.3s" in (result.error or "")
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
+    def test_stale_alarm_is_ignored(self) -> None:
+        """A SIGALRM arriving after every registered timer fired raises nothing."""
+        import signal
+        import time
+
+        from taskmaestro.exceptions import TaskTimeoutError
+        from taskmaestro.runner import _AlarmScheduler, _Timer
+
+        scheduler = _AlarmScheduler()
+        timer = _Timer(time.monotonic() + 60, TaskTimeoutError, "t timed out")
+        scheduler.add(timer)
+        try:
+            with pytest.raises(TaskTimeoutError, match="t timed out"):
+                signal.raise_signal(signal.SIGALRM)
+            assert timer.fired
+            signal.raise_signal(signal.SIGALRM)  # stale: must not raise
+        finally:
+            scheduler.remove(timer)
+
+    @pytest.mark.skipif(
+        not hasattr(__import__("signal"), "SIGALRM"),
+        reason="signal.SIGALRM not available on this platform",
+    )
     def test_expired_job_deadline_fails_next_task_immediately(self, ctx: ExecutionContext) -> None:
         """If the deadline passes during a task, the following task is not started."""
         import time
