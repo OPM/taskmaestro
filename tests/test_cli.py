@@ -8,8 +8,28 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
+from taskmaestro import ExecutionContext, ObjectModel, Task
 from taskmaestro.cli import main
+
+
+class ExternalClient:
+    """Represents a Python-only value such as a live gRPC client."""
+
+
+class ClientHandle(ObjectModel[ExternalClient]):
+    pass
+
+
+class OpaqueInput(BaseModel):
+    handle: ClientHandle
+    amount: int
+
+
+class OpaqueTask(Task[OpaqueInput, ClientHandle]):
+    def run(self, input: OpaqueInput, ctx: ExecutionContext) -> ClientHandle:
+        return input.handle
 
 
 def _files(tmp_path: Path, task: str = "Increment") -> tuple[Path, Path]:
@@ -208,6 +228,28 @@ def test_tasks_describe_json(
     assert description["output_schema"]["properties"]["value"]["type"] == "integer"
     assert main(["tasks", "describe", "example.increment"]) == 0
     assert json.loads(capsys.readouterr().out) == description
+
+
+def test_tasks_describe_runtime_only_objects(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = [
+        EntryPoint(
+            name="example.opaque", value="tests.test_cli:OpaqueTask", group="taskmaestro.tasks"
+        )
+    ]
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: entries)
+
+    assert main(["tasks", "describe", "example.opaque", "--json"]) == 0
+    description = json.loads(capsys.readouterr().out)
+    input_schema = description["input_schema"]
+    handle_schema = input_schema["$defs"]["ClientHandle"]["properties"]["value"]
+    assert handle_schema["not"] == {}
+    assert handle_schema["x-taskmaestro-opaque"] is True
+    assert handle_schema["x-taskmaestro-python-type"] == "tests.test_cli.ExternalClient"
+    assert input_schema["properties"]["amount"]["type"] == "integer"
+    output_schema = description["output_schema"]
+    assert output_schema["properties"]["value"]["x-taskmaestro-opaque"] is True
 
 
 def test_tasks_describe_unknown_plugin(

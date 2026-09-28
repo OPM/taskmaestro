@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import core_schema
 
 from taskmaestro.discovery import get_registered_task, registered_task_names
 from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
@@ -79,6 +81,18 @@ def _tasks_list(args: argparse.Namespace) -> int:
     return 0
 
 
+class _TaskSchemaGenerator(GenerateJsonSchema):
+    """Describe runtime-only Python objects without pretending they accept JSON."""
+
+    def is_instance_schema(self, schema: core_schema.IsInstanceSchema) -> JsonSchemaValue:
+        cls = schema["cls"]
+        return {
+            "not": {},  # No JSON value can satisfy an isinstance check for this object.
+            "x-taskmaestro-opaque": True,
+            "x-taskmaestro-python-type": f"{cls.__module__}.{cls.__qualname__}",
+        }
+
+
 def _tasks_describe(args: argparse.Namespace) -> int:
     task = get_registered_task(args.name)
     try:
@@ -88,8 +102,8 @@ def _tasks_describe(args: argparse.Namespace) -> int:
             "identifier": args.name,
             "name": task.name,
             "timeout_seconds": task.timeout_seconds,
-            "input_schema": input_type.model_json_schema(),
-            "output_schema": output_type.model_json_schema(),
+            "input_schema": input_type.model_json_schema(schema_generator=_TaskSchemaGenerator),
+            "output_schema": output_type.model_json_schema(schema_generator=_TaskSchemaGenerator),
         }
     except (
         TypeError,

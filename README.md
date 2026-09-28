@@ -487,8 +487,11 @@ and emits its registered `identifier`, task `name`, `timeout_seconds`, and Pydan
 `input_schema` / `output_schema` (JSON Schema objects). These commands inspect
 **installed entry points**, not task classes local to a workflow YAML file. Without
 `--json`, `list` prints one identifier per line and `describe` prints indented JSON.
-An unknown, invalid, or non-schema-compatible plugin reports an error on stderr
-and exits with status 2.
+For runtime-only Python objects (such as `ObjectModel[rips.EclipseCase]`), schema
+fields include `"not": {}`, `"x-taskmaestro-opaque": true`, and
+`"x-taskmaestro-python-type"`. They cannot be supplied as JSON; wire them from
+upstream tasks or a Python context instead. Other unsupported schema constructs,
+unknown identifiers, and invalid plugins report an error on stderr and exit with status 2.
 
 ## YAML Configuration
 
