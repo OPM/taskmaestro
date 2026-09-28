@@ -196,8 +196,14 @@ def to_mermaid(
             # Result task → source redirect
             source_redirect[task_name] = f"{task_name}__{inner_wf.result_task_name}"
 
-    # Start and end nodes
-    lines.append('    _start_(("start"))')
+    # A start node represents external job input. Fully configured and
+    # self-contained workflows have no such input, so avoid an orphan node.
+    has_start_node = any(
+        workflow.get_dependencies(name) is None and name not in configured_tasks
+        for name, _cls in tasks
+    )
+    if has_start_node:
+        lines.append('    _start_(("start"))')
     lines.append('    _end_(("end"))')
 
     # JobConfiguration node (if there are configured tasks)

@@ -318,9 +318,9 @@ class TestConfigFieldsVisualization:
         )
         result = to_mermaid(wf)
 
-        # No start edge for configured root task
-        assert "_start_ -->|" not in result
-        # But job config node and dashed edge are present
+        # No orphan start node: JobConfiguration is the workflow's source.
+        assert "_start_" not in result
+        # The job config node and dashed edge are present.
         assert '_job_config_[("JobConfiguration")]' in result
         assert "_job_config_ -.->|" in result
 
