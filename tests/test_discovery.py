@@ -81,7 +81,7 @@ def test_registered_task_can_be_used_in_yaml(plugin_entry_points: None, tmp_path
         "workflow:\n  name: entry_point_workflow\n  tasks:\n    - task: example.increment\n"
     )
     input_path = tmp_path / "input.yaml"
-    input_path.write_text("value: 4\n")
+    input_path.write_text("ExampleTask:\n  value: 4\n")
 
     result = load_workflow_from_yaml(workflow_path, input_path).run()
 

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
@@ -19,7 +19,7 @@ from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.mapping import TaskMap
 from taskmaestro.runner import Runner
-from taskmaestro.task import Task, get_input_type
+from taskmaestro.task import Task
 from taskmaestro.workflow import Workflow, WorkflowBuilder
 
 # --- Pydantic schema models for YAML validation ---
@@ -81,9 +81,10 @@ class ContextConfig(BaseModel):
 class WorkflowSectionConfig(BaseModel):
     """Workflow section of the YAML config."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     result_task: str | None = None
-    input_mode: typing.Literal["auto", "flat", "per_task"] = "auto"
     tasks: list[TaskConfig] = Field(min_length=1)
 
 
@@ -187,70 +188,6 @@ class _Entry:
     cls: type[Task[Any, Any]]
     key: str  # import path or inner-workflow path as written in YAML
     registered_name: str
-
-
-def _decide_input_mode(
-    mode: typing.Literal["auto", "flat", "per_task"],
-    raw_input: dict[str, Any],
-    entries: list[_Entry],
-    *,
-    linear: bool,
-) -> bool:
-    """Return True when *raw_input* is per-task configuration.
-
-    See the comment at the call site for the three modes.  Raises
-    ConfigLoadError for an explicit ``per_task`` file with unknown keys or
-    non-mapping values, and for an ``auto`` file that reads validly both ways.
-    """
-    names = {entry.registered_name for entry in entries}
-
-    if mode == "flat":
-        return False
-
-    if mode == "per_task":
-        for key, value in raw_input.items():
-            if key not in names:
-                raise ConfigLoadError(
-                    f"input_mode is 'per_task' but top-level key '{key}' is not a task "
-                    f"name (known tasks: {sorted(names)})"
-                )
-            if value is not None and not isinstance(value, dict):
-                raise ConfigLoadError(
-                    f"input_mode is 'per_task' but the value for task '{key}' is not a "
-                    f"mapping (got {type(value).__name__})"
-                )
-        return True
-
-    # auto
-    looks_per_task = bool(raw_input) and all(
-        key in names and isinstance(raw_input[key], (dict, type(None))) for key in raw_input
-    )
-    if not looks_per_task:
-        return False
-
-    # The heuristic fired.  If the same mapping is also a valid input for the
-    # sole unconfigured root task, both readings are plausible: refuse to guess.
-    roots = [
-        entry
-        for index, entry in enumerate(entries)
-        if (entry.config.depends_on is None if not linear else index == 0)
-        and not entry.config.config_fields
-        and entry.config.map is None
-    ]
-    if len(roots) == 1:
-        try:
-            get_input_type(roots[0].cls).model_validate(raw_input)
-        except ValidationError:
-            pass
-        else:
-            raise ConfigLoadError(
-                f"Input file is ambiguous: its top-level keys {sorted(raw_input)} are task "
-                f"names, but the mapping is also a valid "
-                f"{get_input_type(roots[0].cls).__name__} for root task "
-                f"'{roots[0].registered_name}'. Set workflow.input_mode to 'flat' or "
-                f"'per_task'."
-            )
-    return True
 
 
 @dataclass(frozen=True)
@@ -432,32 +369,31 @@ def _load_workflow_only(
         tc.depends_on is not None or tc.map is not None for tc in config.workflow.tasks
     )
 
-    # 6b. Decide how the input YAML is interpreted.
-    #
-    #   flat      — the mapping is the single unconfigured root task's input model
-    #   per_task  — top-level keys are task names, values are per-task config
-    #   auto      — infer; every key must name a task with a mapping/null value.
-    #               If the flat reading is *also* valid the file is ambiguous
-    #               and the user must set ``input_mode`` explicitly.
+    # 6b. Input YAML always uses per-task configuration. Top-level keys are
+    # registered task instance names and each value is a mapping or null.
     entry_by_name = {entry.registered_name: entry for entry in entries}
-    is_per_task_config = _decide_input_mode(
-        config.workflow.input_mode,
-        raw_input,
-        entries,
-        linear=not has_depends_on,
-    )
+    for key, value in raw_input.items():
+        if key not in entry_by_name:
+            raise ConfigLoadError(
+                f"Input top-level key '{key}' is not a task name "
+                f"(known tasks: {sorted(entry_by_name)})"
+            )
+        if value is not None and not isinstance(value, dict):
+            raise ConfigLoadError(
+                f"Input value for task '{key}' must be a mapping or null "
+                f"(got {type(value).__name__})"
+            )
 
     per_task_data: dict[str, dict[str, Any]] = {}
     per_task_cfg_fields: dict[str, list[str]] = {}
-    if is_per_task_config:
-        for task_name, task_values in raw_input.items():
-            per_task_data[task_name] = dict(task_values) if task_values else {}
-            if task_values:
-                task_config = entry_by_name[task_name].config
-                map_source = task_config.map.over if task_config.map is not None else None
-                per_task_cfg_fields[task_name] = [
-                    field_name for field_name in task_values if field_name != map_source
-                ]
+    for task_name, task_values in raw_input.items():
+        per_task_data[task_name] = dict(task_values) if task_values else {}
+        if task_values:
+            task_config = entry_by_name[task_name].config
+            map_source = task_config.map.over if task_config.map is not None else None
+            per_task_cfg_fields[task_name] = [
+                field_name for field_name in task_values if field_name != map_source
+            ]
 
     # 7. Resolve result_task
     result_task_name: str | None = None
@@ -571,12 +507,8 @@ def _load_workflow_only(
     except Exception as exc:
         raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc
 
-    # 9. Build JobConfiguration if per-task config detected
-    job_configuration: JobConfiguration | None = None
-    if is_per_task_config:
-        job_configuration = JobConfiguration(per_task_data)
-
-    return workflow, job_configuration
+    # 9. Input YAML always becomes per-task job configuration.
+    return workflow, JobConfiguration(per_task_data)
 
 
 def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -> LoadedWorkflow:
@@ -621,36 +553,11 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
     # 4. Build workflow and job_configuration via shared helper
     workflow, job_configuration = _load_workflow_only(workflow_path, input_path)
 
-    # 5. Validate input and build Job
-    job: Job[Any]
+    # 5. Validate per-task input and build Job. The root input is EmptyConfig
+    # because all external YAML values are delivered through JobConfiguration.
+    assert job_configuration is not None
     try:
-        if job_configuration is not None:
-            job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
-        else:
-            # Flat config mode: find root tasks from the built workflow
-            root_task_classes = [
-                workflow._tasks[task_name]
-                for task_name, deps in workflow._dependencies.items()
-                if deps is None and not workflow.get_config_fields(task_name)
-            ]
-            if not root_task_classes and all(
-                deps is not None for deps in workflow._dependencies.values()
-            ):
-                # The workflow is self-contained, for example a task fed only by
-                # explicitly empty collection dependencies.
-                job = Job(workflow, EmptyConfig())
-            elif not root_task_classes:
-                raise ConfigLoadError(
-                    "Workflow has configured root tasks but no per-task input configuration"
-                )
-            else:
-                input_type = get_input_type(root_task_classes[0])
-                try:
-                    validated_input = input_type.model_validate(raw_input)
-                except ValidationError as exc:
-                    raise ConfigLoadError(f"Input validation error: {exc}") from exc
-
-                job = Job(workflow, validated_input)
+        job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
     except WorkflowDefinitionError as exc:
         raise ConfigLoadError(f"Job validation failed: {exc}") from exc
 

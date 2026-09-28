@@ -40,14 +40,13 @@ class Fail(Task[NumberInput, NumberOutput]):
         f"""\
 workflow:
   name: cli_test
-  input_mode: flat
   tasks:
     - task: pipeline.{task}
 """,
         encoding="utf-8",
     )
     input_path = tmp_path / "input.yaml"
-    input_path.write_text("value: 4\n", encoding="utf-8")
+    input_path.write_text(f"{task.lower()}:\n  value: 4\n", encoding="utf-8")
     return workflow, input_path
 
 
