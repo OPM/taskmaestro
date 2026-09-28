@@ -608,6 +608,18 @@ WorkflowRunnerError (base)
     └── TaskTimeoutError          # Task exceeded timeout
 ```
 
+## Command-Line Interface
+
+Installed packages provide a `taskmaestro` command for YAML workflows:
+
+```bash
+taskmaestro validate workflow.yaml --input input.yaml
+taskmaestro graph workflow.yaml --input input.yaml
+taskmaestro run workflow.yaml --input input.yaml --log-level INFO
+```
+
+`run` prints the final output as JSON and returns a nonzero exit code when the workflow fails. `graph` prints Mermaid markup.
+
 ## Examples
 
 Four full example pipelines are included in the `examples/` directory:
