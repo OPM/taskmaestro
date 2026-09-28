@@ -3,5 +3,6 @@
 # Run:
 #   python examples/image_processing/pipeline.py --yaml --input input.yaml
 
+# Relative paths are resolved against this example's directory.
 load_image:
-  image_path: "taskmaestro.png"
+  image_path: "../../taskmaestro.png"
