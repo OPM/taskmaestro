@@ -273,7 +273,7 @@ def build_workflow() -> Workflow:
     )
     builder.task(
         CreateReleaseManifest,
-        depends_on={"artifacts": builds.field("root")},
+        depends_on={"artifacts": builds},
     )
     return builder.build()
 
