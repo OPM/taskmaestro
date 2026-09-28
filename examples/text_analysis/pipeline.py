@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from typing import cast
 
 from pydantic import BaseModel
 
@@ -33,6 +34,7 @@ from taskmaestro import (
     ExecutionContext,
     Job,
     JobConfiguration,
+    JobStatus,
     Runner,
     Task,
     Workflow,
@@ -395,7 +397,12 @@ consistently ranking among the top programming languages worldwide.\
 
 def print_report(result: Job[EmptyConfig], timing: TimingHook, workflow: Workflow) -> None:
     """Print the analysis report, timings, and Mermaid diagram."""
-    report: AnalysisReport = result.result  # type: ignore[assignment]
+    if result.status != JobStatus.COMPLETED:
+        print(f"  Job status:       {result.status}")
+        print(f"  Failed task:      {result.failed_task}")
+        print(f"  Error:            {result.error}")
+        return
+    report = cast(AnalysisReport, result.result)
 
     print("=" * 60)
     print(f"  {report.title} — Analysis Report")
