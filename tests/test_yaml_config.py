@@ -640,6 +640,27 @@ workflow:
         assert result.status == JobStatus.COMPLETED
         assert result.result.text == "OLLEH"  # type: ignore[union-attr]
 
+    def test_list_depends_on_with_input_values_raises(self, tmp_path: Path) -> None:
+        """Input values for a field-routed task are rejected, not silently dropped."""
+        wf_path = _write_workflow_yaml(
+            tmp_path,
+            f"""\
+workflow:
+  name: list_field_ref
+  tasks:
+    - task: {THIS_MODULE}.WrapText
+    - task: {THIS_MODULE}.ReverseText
+      depends_on:
+        - {THIS_MODULE}.WrapText
+        - inner
+""",
+        )
+        in_path = _write_input_yaml(
+            tmp_path, "wrap_text:\n  text: hello\nreverse_text:\n  text: ignored\n"
+        )
+        with pytest.raises(ConfigLoadError, match="cannot also declare config_fields"):
+            load_workflow_from_yaml(wf_path, in_path)
+
     def test_dict_fan_in_with_list_field_ref(self, tmp_path: Path) -> None:
         """Dict depends_on with list-form field refs (fan-in + field routing)."""
         wf_path = _write_workflow_yaml(
