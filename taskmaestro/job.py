@@ -125,7 +125,9 @@ class Job(Generic[C]):
             missing = expected - supplied
             if missing:
                 raise WorkflowDefinitionError(
-                    f"Task '{task_name}' is missing configuration fields {sorted(missing)}"
+                    f"Task '{task_name}' is missing configuration fields {sorted(missing)}",
+                    task_name=task_name,
+                    fields=sorted(missing),
                 )
 
     def _validate_root_task_inputs(self, config: C) -> None:

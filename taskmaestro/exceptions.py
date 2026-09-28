@@ -10,6 +10,17 @@ class WorkflowRunnerError(Exception):
 class WorkflowDefinitionError(WorkflowRunnerError):
     """Raised at workflow construction time for invalid definitions."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        task_name: str | None = None,
+        fields: list[str] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.task_name = task_name
+        self.fields = fields or []
+
 
 class CycleDetectedError(WorkflowDefinitionError):
     """Dependency graph contains a cycle."""

@@ -643,7 +643,39 @@ taskmaestro graph workflow.yaml --input input.yaml
 taskmaestro run workflow.yaml --input input.yaml --log-level INFO
 ```
 
-`run` prints the final output as JSON and returns a nonzero exit code when the workflow fails. `graph` prints Mermaid markup.
+By default, `run` prints the final output as JSON and reports errors on stderr;
+`validate` prints a human-readable confirmation. `graph` prints Mermaid markup.
+
+For automation, use `--json` with `validate` or `run`:
+
+```bash
+taskmaestro validate workflow.yaml --input input.yaml --json
+taskmaestro run workflow.yaml --input input.yaml --json
+```
+
+Successful validation emits `{"status":"valid","workflow":"..."}`. A successful
+run emits `{"status":"completed","workflow":"...","result":{...}}`. A failure
+emits one JSON object on stdout, for example:
+
+```json
+{"status":"failed","workflow":"example","failed_task":"prepare","error":{"code":"task_failed","type":"ValueError","message":"Task failed","task":"prepare","field":null,"issues":[]}}
+```
+
+Errors contain `code`, exception `type`, a safe `message`, nullable `task` and
+`field`, and `issues` (field paths and error codes, without input values).
+Loading failures have status `invalid` and `code: "configuration_error"`; task
+failures have status `failed` and `code: "task_failed"`. If a completed result
+cannot be encoded as JSON (e.g. a Python-only object), `run --json` returns
+`code: "serialization_error"`. Missing configuration fields produce `issues`
+with code `missing`; when no structured field metadata is available, `field`
+is `null`. Use text mode when you need the original exception message.
+
+Exit codes: `0` success, `1` task or result-serialization failure, `2` workflow
+configuration failure. In JSON mode logs and ordinary Python `print()` output
+from imports/tasks go to stderr, reserving stdout for the result document.
+Application code can still write directly to file descriptor 1; JSON mode is
+not a sandbox. Error objects intentionally omit raw exception messages, but
+application-generated stderr may contain sensitive data.
 
 `python -m taskmaestro ...` is equivalent, which is useful when the scripts directory is not on `PATH`.
 
