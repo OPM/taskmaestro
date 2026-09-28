@@ -624,6 +624,8 @@ taskmaestro run workflow.yaml --input input.yaml --log-level INFO
 
 `run` prints the final output as JSON and returns a nonzero exit code when the workflow fails. `graph` prints Mermaid markup.
 
+`python -m taskmaestro ...` is equivalent, which is useful when the scripts directory is not on `PATH`.
+
 ## Examples
 
 Four full example pipelines are included in the `examples/` directory:
