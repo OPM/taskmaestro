@@ -191,11 +191,19 @@ class TestTaskHandles:
         builder = Workflow.builder("named_handles")
         first = builder.task(AddOne, name="first")
         second = builder.task(AddOne, name="second")
-        builder.task(FanInTask, depends_on={"a": first, "b": second})
+        builder.task(FanInTask, a=first, b=second)
 
         result = Runner().run(Job(builder.build(), NumberInput(value=2)))
 
         assert result.result == FanInOutput(total=6)
+
+    def test_keyword_dependencies_cannot_be_mixed_with_depends_on(self) -> None:
+        builder = Workflow.builder("mixed_dependencies")
+        first = builder.task(AddOne)
+        second = builder.task(AddOneB)
+
+        with pytest.raises(WorkflowDefinitionError, match="either depends_on or keyword"):
+            builder.task(FanInTask, depends_on={"a": first}, b=second)
 
     def test_output_field_handle_routes_field(self) -> None:
         class Envelope(BaseModel):

@@ -143,20 +143,18 @@ builder.task(Process, name="proc_2", depends_on=well_2)
 workflow = builder.build()
 ```
 
-Use `handle.field("field_name")` to route one output field, and pass handles directly to `collect()`. Keyword arguments provide a concise keyed collection:
+Use `handle.field("field_name")` to route one output field. Named input dependencies can be passed directly to `task()`, while keyword arguments to `collect()` provide a concise keyed collection:
 
 ```python
 merged = builder.task(
     MergeResults,
-    depends_on={
-        "primary": producer.field("result"),
-        "checks": collect(tests=tests, lint=lint, types=types),
-    },
+    primary=producer.field("result"),
+    checks=collect(tests=tests, lint=lint, types=types),
 )
 builder.set_result_task(merged)
 ```
 
-Handles are accepted anywhere dependency references are accepted. A handle from a different builder is rejected. The existing fluent `add_task()` API remains fully supported for backward compatibility.
+Handles are accepted anywhere dependency references are accepted. A handle from a different builder is rejected. Use the `depends_on` dictionary form when an input field conflicts with a reserved builder argument such as `name` or `config_fields`. The existing fluent `add_task()` API remains fully supported for backward compatibility.
 
 ## Named Task Instances
 

@@ -254,24 +254,19 @@ def build_workflow() -> Workflow:
     types = builder.task(CheckTypes, depends_on=package)
     validated = builder.task(
         ValidateRelease,
-        depends_on={
-            "package": package,
-            "checks": collect(tests=tests, lint=lint, types=types),
-        },
+        package=package,
+        checks=collect(tests=tests, lint=lint, types=types),
     )
     builds = builder.map_task(
         BuildTarget,
         name="build_targets",
-        depends_on={"release": validated},
+        release=validated,
         over="targets",
         key_as="target_name",
         value_as="settings",
         error_mode="collect_all",
     )
-    builder.task(
-        CreateReleaseManifest,
-        depends_on={"artifacts": builds},
-    )
+    builder.task(CreateReleaseManifest, artifacts=builds)
     return builder.build()
 
 
