@@ -474,6 +474,22 @@ without importing plugin modules, or `get_registered_task(name)` and
 `get_registered_workflow(name)` to load one plugin. Duplicate names and invalid plugin
 types raise `PluginLoadError`.
 
+Agents can inspect installed task plugins from the CLI without loading every plugin:
+
+```bash
+taskmaestro tasks list --json
+taskmaestro tasks describe acme.prepare --json
+```
+
+`list --json` emits `{"tasks": ["acme.prepare", ...]}` in sorted order; an empty list
+means no task plugins are installed. `describe --json` loads only the named plugin
+and emits its registered `identifier`, task `name`, `timeout_seconds`, and Pydantic
+`input_schema` / `output_schema` (JSON Schema objects). These commands inspect
+**installed entry points**, not task classes local to a workflow YAML file. Without
+`--json`, `list` prints one identifier per line and `describe` prints indented JSON.
+An unknown, invalid, or non-schema-compatible plugin reports an error on stderr
+and exits with status 2.
+
 ## YAML Configuration
 
 Workflows can be defined entirely in YAML instead of Python. A `task:` value may be

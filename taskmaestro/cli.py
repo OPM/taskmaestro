@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from taskmaestro.exceptions import ConfigLoadError
+from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
+
+from taskmaestro.discovery import get_registered_task, registered_task_names
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
 from taskmaestro.job import JobStatus
+from taskmaestro.task import get_input_type, get_output_type
 from taskmaestro.yaml_config import LoadedWorkflow, load_workflow_from_yaml
 
 
@@ -65,6 +70,38 @@ def _graph(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tasks_list(args: argparse.Namespace) -> int:
+    names = sorted(registered_task_names())
+    if args.json:
+        print(json.dumps({"tasks": names}))
+    else:
+        print("\n".join(names))
+    return 0
+
+
+def _tasks_describe(args: argparse.Namespace) -> int:
+    task = get_registered_task(args.name)
+    try:
+        input_type = get_input_type(task)
+        output_type = get_output_type(task)
+        description = {
+            "identifier": args.name,
+            "name": task.name,
+            "timeout_seconds": task.timeout_seconds,
+            "input_schema": input_type.model_json_schema(),
+            "output_schema": output_type.model_json_schema(),
+        }
+    except (
+        TypeError,
+        ValueError,
+        PydanticInvalidForJsonSchema,
+        PydanticSchemaGenerationError,
+    ) as exc:
+        raise PluginLoadError(f"Cannot describe task '{args.name}': {exc}") from exc
+    print(json.dumps(description, indent=None if args.json else 2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the public command-line parser."""
     parser = argparse.ArgumentParser(prog="taskmaestro")
@@ -87,6 +124,16 @@ def build_parser() -> argparse.ArgumentParser:
     _add_workflow_arguments(graph_parser)
     graph_parser.set_defaults(handler=_graph)
 
+    tasks_parser = subparsers.add_parser("tasks", help="Discover installed task plugins")
+    tasks_subparsers = tasks_parser.add_subparsers(dest="tasks_command", required=True)
+    list_parser = tasks_subparsers.add_parser("list", help="List registered task identifiers")
+    list_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON")
+    list_parser.set_defaults(handler=_tasks_list)
+    describe_parser = tasks_subparsers.add_parser("describe", help="Describe a registered task")
+    describe_parser.add_argument("name", help="Registered task identifier (not a class path)")
+    describe_parser.add_argument("--json", action="store_true", help="Print single-line JSON")
+    describe_parser.set_defaults(handler=_tasks_describe)
+
     return parser
 
 
@@ -98,6 +145,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return int(handler(args))
     except ConfigLoadError as exc:
         print(f"Configuration error: {exc}", file=sys.stderr)
+        return 2
+    except PluginLoadError as exc:
+        print(f"Plugin error: {exc}", file=sys.stderr)
         return 2
 
 

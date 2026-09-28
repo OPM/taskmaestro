@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
@@ -151,6 +153,90 @@ def test_module_entry_points_run_the_cli(
             runpy.run_module(module, run_name="__main__", alter_sys=True)
     assert excinfo.value.code == 0
     assert "Workflow 'cli_test' is valid" in capsys.readouterr().out
+
+
+def test_tasks_list_does_not_import_plugins(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = [
+        EntryPoint(name="z.broken", value="missing_module:Task", group="taskmaestro.tasks"),
+        EntryPoint(
+            name="a.valid", value="tests.test_discovery:ExampleTask", group="taskmaestro.tasks"
+        ),
+    ]
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: entries)
+
+    assert main(["tasks", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"tasks": ["a.valid", "z.broken"]}
+    assert main(["tasks", "list"]) == 0
+    assert capsys.readouterr().out == "a.valid\nz.broken\n"
+
+
+def test_tasks_list_rejects_duplicate_identifiers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entry = EntryPoint(
+        name="duplicate", value="tests.test_discovery:ExampleTask", group="taskmaestro.tasks"
+    )
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [entry, entry])
+
+    assert main(["tasks", "list", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Plugin error: Multiple entry points named 'duplicate'" in captured.err
+
+
+def test_tasks_describe_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = [
+        EntryPoint(
+            name="example.increment",
+            value="tests.test_discovery:ExampleTask",
+            group="taskmaestro.tasks",
+        )
+    ]
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: entries)
+
+    assert main(["tasks", "describe", "example.increment", "--json"]) == 0
+    description = json.loads(capsys.readouterr().out)
+    assert description["identifier"] == "example.increment"
+    assert description["name"] == "ExampleTask"
+    assert description["timeout_seconds"] is None
+    assert description["input_schema"]["properties"]["value"]["type"] == "integer"
+    assert description["input_schema"]["required"] == ["value"]
+    assert description["output_schema"]["properties"]["value"]["type"] == "integer"
+    assert main(["tasks", "describe", "example.increment"]) == 0
+    assert json.loads(capsys.readouterr().out) == description
+
+
+def test_tasks_describe_unknown_plugin(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [])
+
+    assert main(["tasks", "describe", "missing", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Plugin error: No task entry point named 'missing'" in captured.err
+
+
+def test_tasks_describe_broken_plugin(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    entries = [
+        EntryPoint(
+            name="broken", value="missing_taskmaestro_plugin:Task", group="taskmaestro.tasks"
+        )
+    ]
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: entries)
+
+    assert main(["tasks", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"tasks": ["broken"]}
+    assert main(["tasks", "describe", "broken", "--json"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Plugin error: Cannot load task entry point 'broken'" in captured.err
 
 
 def test_python_dash_m_exit_code(tmp_path: Path) -> None:
