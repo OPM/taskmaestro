@@ -30,12 +30,14 @@ from __future__ import annotations
 import hashlib
 import struct
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel
 
 from taskmaestro import (
     ExecutionContext,
     Job,
+    JobStatus,
     Runner,
     Task,
     Workflow,
@@ -287,7 +289,12 @@ def print_report(
     outer_workflow: Workflow,
 ) -> None:
     """Print the analysis report, timings, and Mermaid diagrams."""
-    report: ReportOutput = result.result  # type: ignore[assignment]
+    if result.status != JobStatus.COMPLETED:
+        print(f"  Job status:       {result.status}")
+        print(f"  Failed task:      {result.failed_task}")
+        print(f"  Error:            {result.error}")
+        return
+    report = cast(ReportOutput, result.result)
 
     print("=" * 60)
     print(f"  {report.title}")
