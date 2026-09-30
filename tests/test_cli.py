@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from pydantic_core import core_schema
 
 from taskmaestro import ExecutionContext, ObjectModel, Task
-from taskmaestro.cli import _dependency_spec, main
+from taskmaestro.cli import _dependency_spec, _jsonable, main
 from taskmaestro.dependencies import CollectionRef, OutputRef
 
 
@@ -527,6 +527,17 @@ def test_workflow_describe_rejects_unsupported_config_values(
     err = capsys.readouterr().err
     assert "'config_values.extra'" in err
     assert message in err
+
+
+def test_jsonable_handles_values_yaml_cannot_express() -> None:
+    """Programmatic configs may hold paths, tuple keys or mixed-type sets."""
+    assert _jsonable({"out": Path("/tmp/out"), "pair": (1, 2)}, "task") == {
+        "out": "/tmp/out",
+        "pair": [1, 2],
+    }
+    assert _jsonable({1, "a", None}, "task.tags") == ["a", 1, None]  # By JSON text.
+    with pytest.raises(TypeError, match="'task' has an unsupported mapping key type"):
+        _jsonable({(1, 2): "x"}, "task")
 
 
 def test_workflow_describe_config_values_for_partial_and_mapped_config(
