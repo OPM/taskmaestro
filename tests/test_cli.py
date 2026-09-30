@@ -6,6 +6,7 @@ import json
 import sys
 from importlib.metadata import EntryPoint
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pydantic import BaseModel
@@ -47,6 +48,38 @@ class UnsupportedInput(BaseModel):
 class UnsupportedTask(Task[UnsupportedInput, UnsupportedInput]):
     def run(self, input: UnsupportedInput, ctx: ExecutionContext) -> UnsupportedInput:
         return input
+
+
+class ConfigValuesInput(BaseModel):
+    """Accepts arbitrary values so tests can exercise raw config value reporting."""
+
+    value: Any = None
+    end_date: Any = None
+    started: Any = None
+    grid_case: Any = None
+    steps: Any = None
+    by_number: Any = None
+    tags: Any = None
+    extra: Any = None
+
+
+class ConfigValuesTask(Task[ConfigValuesInput, ConfigValuesInput]):
+    name = "config_values"
+
+    def run(self, input: ConfigValuesInput, ctx: ExecutionContext) -> ConfigValuesInput:
+        return input
+
+
+def _config_values_files(tmp_path: Path, values: str) -> tuple[Path, Path]:
+    workflow = tmp_path / "workflow.yaml"
+    workflow.write_text(
+        "workflow:\n  name: config_values\n  tasks:\n"
+        "    - task: tests.test_cli.ConfigValuesTask\n",
+        encoding="utf-8",
+    )
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text(f"config_values:\n{values}", encoding="utf-8")
+    return workflow, input_path
 
 
 def _files(tmp_path: Path, task: str = "Increment") -> tuple[Path, Path]:
@@ -399,6 +432,8 @@ def test_workflow_describe_without_input(
     assert task["required_input_fields"] == ["value"]
     assert task["config_fields"] == []
     assert task["provided_config_fields"] is None
+    assert task["missing_config_fields"] is None
+    assert task["config_values"] is None
     assert task["input_schema"]["properties"]["value"]["type"] == "integer"
     assert task["output_schema"]["properties"]["value"]["type"] == "integer"
     assert main(["workflow", "describe", str(workflow)]) == 0
@@ -435,7 +470,88 @@ def test_workflow_describe_with_input_does_not_execute(
     assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 0
     description = json.loads(capsys.readouterr().out)
     assert description["tasks"][0]["provided_config_fields"] == ["value"]
-    assert "private-token" not in json.dumps(description)
+    assert description["tasks"][0]["missing_config_fields"] == []
+    # Values are reported raw, before validation (the task expects an int).
+    assert description["tasks"][0]["config_values"] == {"value": "private-token"}
+
+
+def test_workflow_describe_reports_raw_config_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _config_values_files(
+        tmp_path,
+        """\
+  value: 4
+  end_date: 2030-01-01
+  started: 2030-01-01T12:30:00Z
+  grid_case: {__resinsight_ref__: EclipseCase, case_id: 0}
+  steps: [1, 2.5, null, true]
+  by_number: {1: one, 2030-01-02: date, false: f, null: n, 1.5: x}
+  tags: !!set {b: null, a: null}
+""",
+    )
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 0
+    task = json.loads(capsys.readouterr().out)["tasks"][0]
+    assert task["config_values"] == {
+        "by_number": {"1": "one", "2030-01-02": "date", "false": "f", "null": "n", "1.5": "x"},
+        "end_date": "2030-01-01",
+        "grid_case": {"__resinsight_ref__": "EclipseCase", "case_id": 0},
+        "started": "2030-01-01T12:30:00+00:00",
+        "steps": [1, 2.5, None, True],
+        "tags": ["a", "b"],
+        "value": 4,
+    }
+    assert list(task["config_values"]) == task["provided_config_fields"]
+
+
+@pytest.mark.parametrize(
+    ("yaml_value", "message"),
+    [
+        (".nan", "not a finite number"),
+        ("!!binary aGVsbG8=", "unsupported type bytes"),
+        ("{1: a, '1': b}", "collide"),
+    ],
+)
+def test_workflow_describe_rejects_unsupported_config_values(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], yaml_value: str, message: str
+) -> None:
+    workflow, input_path = _config_values_files(tmp_path, f"  value: 4\n  extra: {yaml_value}\n")
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 2
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "invalid"
+    assert result["error"]["code"] == "configuration_error"
+
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path)]) == 2
+    err = capsys.readouterr().err
+    assert "'config_values.extra'" in err
+    assert message in err
+
+
+def test_workflow_describe_config_values_for_partial_and_mapped_config(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    example = Path(__file__).resolve().parents[1] / "examples/release_pipeline"
+
+    with monkeypatch.context() as patch:
+        patch.delitem(sys.modules, "pipeline", raising=False)
+        args = ["workflow", "describe", str(example / "workflow.yaml")]
+        assert main([*args, "--input", str(example / "input.yaml"), "--json"]) == 0
+        patch.delitem(sys.modules, "pipeline", raising=False)
+    tasks = {task["name"]: task for task in json.loads(capsys.readouterr().out)["tasks"]}
+    for task in tasks.values():
+        assert list(task["config_values"]) == task["provided_config_fields"]
+        assert task["missing_config_fields"] == []
+    # The mapped task's map source comes from input.yaml, so it is reported.
+    targets = tasks["build_targets"]["config_values"]["targets"]
+    assert targets["linux-x64"] == {
+        "operating_system": "linux",
+        "architecture": "x86_64",
+        "extension": "tar.gz",
+    }
+    assert tasks["load_package"]["config_values"]["version"] == "1.0.0"
+    assert tasks["validate_release"]["config_values"] == {}
 
 
 def test_workflow_describe_missing_input_reports_json_error(
@@ -453,18 +569,49 @@ def test_workflow_describe_missing_input_reports_json_error(
 def test_workflow_describe_reports_missing_config_fields(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    workflow, input_path = _files(tmp_path)
+    """An incomplete input (e.g. a template with runtime pickers) is described, not rejected."""
+    workflow, input_path = _config_values_files(tmp_path, "  end_date: 2030-01-01\n")
     workflow.write_text(
-        "workflow:\n  name: cli_test\n  tasks:\n"
-        "    - task: pipeline.Increment\n      config_fields: [value]\n",
+        workflow.read_text(encoding="utf-8")
+        + "      config_fields: [end_date, grid_case, value]\n",
         encoding="utf-8",
     )
-    input_path.write_text("{}\n", encoding="utf-8")
 
-    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 2
+    assert main(["workflow", "describe", str(workflow), "--input", str(input_path), "--json"]) == 0
+    task = json.loads(capsys.readouterr().out)["tasks"][0]
+    assert task["config_fields"] == ["end_date", "grid_case", "value"]
+    assert task["provided_config_fields"] == ["end_date"]
+    assert task["missing_config_fields"] == ["grid_case", "value"]
+    assert task["config_values"] == {"end_date": "2030-01-01"}
+
+    # Validation and execution stay strict about missing configuration.
+    assert main(["validate", str(workflow), "--input", str(input_path), "--json"]) == 2
     result = json.loads(capsys.readouterr().out)
-    assert result["error"]["task"] == "increment"
-    assert result["error"]["issues"] == [{"field": "value", "code": "missing"}]
+    assert result["error"]["task"] == "config_values"
+    assert result["error"]["issues"] == [
+        {"field": "grid_case", "code": "missing"},
+        {"field": "value", "code": "missing"},
+    ]
+
+
+def test_workflow_describe_rejects_missing_map_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    example = Path(__file__).resolve().parents[1] / "examples/release_pipeline"
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text(
+        (example / "input.yaml").read_text(encoding="utf-8").split("build_targets:")[0],
+        encoding="utf-8",
+    )
+
+    with monkeypatch.context() as patch:
+        patch.delitem(sys.modules, "pipeline", raising=False)
+        args = ["workflow", "describe", str(example / "workflow.yaml"), "--input"]
+        assert main([*args, str(input_path)]) == 2
+        patch.delitem(sys.modules, "pipeline", raising=False)
+    assert "Mapped task 'build_targets' requires configuration field 'targets'" in (
+        capsys.readouterr().err
+    )
 
 
 def test_workflow_dependency_routing_and_positional_collection() -> None:

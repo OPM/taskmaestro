@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
-from pathlib import Path
+from datetime import date
+from pathlib import Path, PurePath
 from typing import Any
 
 from pydantic import ValidationError
@@ -20,7 +22,7 @@ from pydantic_core import core_schema
 from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.discovery import get_registered_task, registered_task_names
 from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
-from taskmaestro.job import EmptyConfig, Job, JobStatus
+from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
 from taskmaestro.task import get_input_type, get_output_type
 from taskmaestro.workflow import Workflow
 from taskmaestro.yaml_config import LoadedWorkflow, _load_workflow_only, load_workflow_from_yaml
@@ -209,8 +211,87 @@ def _dependency_spec(deps: Any) -> Any:
     return result
 
 
+def _jsonable_key(key: object, path: str) -> str:
+    """Convert a YAML mapping key to the JSON object key it would get."""
+    value = _jsonable(key, path)
+    if isinstance(value, str):
+        return value
+    if isinstance(value, bool | int | float) or value is None:
+        return json.dumps(value)
+    raise TypeError(f"Configuration value '{path}' has an unsupported mapping key type")
+
+
+def _jsonable(value: object, path: str) -> Any:
+    """Convert a raw configuration value (as loaded from YAML) to plain JSON data.
+
+    Dates and datetimes become ISO 8601 strings and paths become strings;
+    everything else must already be JSON-compatible. ``path`` names the value
+    in error messages, which deliberately never include the value itself.
+    """
+    if value is None or isinstance(value, bool | int | str):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"Configuration value '{path}' is not a finite number")
+        return value
+    if isinstance(value, date):  # Includes datetime.
+        return value.isoformat()
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            json_key = _jsonable_key(key, path)
+            if json_key in result:
+                raise ValueError(
+                    f"Configuration value '{path}' has keys that collide as JSON key '{json_key}'"
+                )
+            result[json_key] = _jsonable(item, f"{path}.{json_key}")
+        return result
+    if isinstance(value, list | tuple):
+        return [_jsonable(item, f"{path}[{index}]") for index, item in enumerate(value)]
+    if isinstance(value, set | frozenset):
+        items = [_jsonable(item, f"{path}[]") for item in value]
+        try:
+            return sorted(items)
+        except TypeError:
+            # Mixed types: order by canonical JSON text so output is deterministic.
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+    raise TypeError(f"Configuration value '{path}' has unsupported type {type(value).__name__}")
+
+
+def _missing_config_fields(workflow: Workflow, config: JobConfiguration) -> dict[str, list[str]]:
+    """Return the declared config fields that the input does not supply, per task."""
+    return {
+        name: sorted(workflow.get_config_fields(name) - config.config_fields_for_task(name))
+        for name, _task in workflow.topological_order()
+    }
+
+
+def _fill_missing(
+    workflow: Workflow, config: JobConfiguration, missing: dict[str, list[str]]
+) -> JobConfiguration:
+    """Return a copy of ``config`` with placeholder values for missing config fields.
+
+    ``Job`` only checks that these fields are present, so placeholders let it run
+    its remaining validation. Map sources get no placeholder, so a missing one is
+    still rejected with its own error.
+    """
+    filled: dict[str, dict[str, Any]] = {}
+    for name, fields in missing.items():
+        task_map = workflow.get_task_map(name)
+        map_source = task_map.over if task_map is not None else None
+        placeholders = {field: None for field in fields if field != map_source}
+        filled[name] = {**placeholders, **config.get_config_for_task(name)}
+    return JobConfiguration(filled)
+
+
 def _workflow_description(
-    workflow: Workflow, *, configured: dict[str, list[str]] | None
+    workflow: Workflow,
+    *,
+    configured: dict[str, list[str]] | None,
+    missing: dict[str, list[str]] | None = None,
+    values: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     tasks: list[dict[str, Any]] = []
     for name, task in workflow.topological_order():
@@ -224,6 +305,8 @@ def _workflow_description(
                 "depends_on": _dependency_spec(workflow.get_dependencies(name)),
                 "config_fields": sorted(workflow.get_config_fields(name)),
                 "provided_config_fields": configured[name] if configured is not None else None,
+                "missing_config_fields": missing[name] if missing is not None else None,
+                "config_values": values[name] if values is not None else None,
                 "required_input_fields": sorted(
                     field for field, info in input_type.model_fields.items() if info.is_required()
                 ),
@@ -246,15 +329,36 @@ def _workflow_describe(args: argparse.Namespace) -> int:
                 Path(args.workflow), Path(args.input) if args.input else None
             )
             configured = None
+            missing = None
+            values = None
             if args.input is not None:
                 assert config is not None
-                # Check supplied config without constructing hooks or executing any tasks.
-                Job(workflow, EmptyConfig(), job_configuration=config)
+                missing = _missing_config_fields(workflow, config)
+                # Check the rest of the supplied config (map sources, root inputs)
+                # without constructing hooks or executing any tasks. Missing config
+                # fields are reported rather than rejected: the input may be a
+                # template whose remaining fields the caller fills in.
+                Job(
+                    workflow,
+                    EmptyConfig(),
+                    job_configuration=_fill_missing(workflow, config, missing),
+                )
                 configured = {
                     name: sorted(config.config_fields_for_task(name))
                     for name, _task in workflow.topological_order()
                 }
-            description = _workflow_description(workflow, configured=configured)
+                # Raw input values, before Pydantic validation, so opaque or
+                # runtime-only markers pass through unchanged.
+                values = {
+                    name: {
+                        field: _jsonable(value, f"{name}.{field}")
+                        for field, value in sorted(config.get_config_for_task(name).items())
+                    }
+                    for name, _task in workflow.topological_order()
+                }
+            description = _workflow_description(
+                workflow, configured=configured, missing=missing, values=values
+            )
     except WorkflowDefinitionError as exc:
         raise ConfigLoadError(f"Job validation failed: {exc}") from exc
     except (
@@ -336,7 +440,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     workflow_describe_parser.add_argument("workflow", help="Path to the workflow YAML file")
     workflow_describe_parser.add_argument(
-        "--input", help="Optional input YAML to check required configuration fields"
+        "--input",
+        help="Optional input YAML; reports provided, missing and configured values per task",
     )
     workflow_describe_parser.add_argument(
         "--json", action="store_true", help="Print single-line JSON"

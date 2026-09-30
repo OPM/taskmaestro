@@ -687,10 +687,23 @@ and Pydantic input/output schemas. Collection dependencies include their kind
 (`positional` or `keyed`) and member references. `python_type` identifies the
 loaded class; it may differ from the plugin entry-point identifier used in YAML.
 
-Pass `--input input.yaml` to check that required configuration fields and map
-sources are supplied. Then `provided_config_fields` lists **field names only**;
-without `--input`, it is `null`. This check does not run tasks or hooks and does
-not validate every configured value's runtime type. Loading YAML still imports
+Pass `--input input.yaml` to check the input against the workflow. The input
+may be incomplete (for example a template whose runtime-picker fields a UI
+fills in): `provided_config_fields` lists the field names set for each task,
+`missing_config_fields` lists declared `config_fields` the input does not set,
+and `config_values` maps exactly the provided names to their values; without
+`--input`, all three are `null`. Other problems, such as unknown task keys or a
+missing or invalid map source, still fail. `validate` and `run` reject missing
+configuration fields. Values are what `input.yaml` contains for
+the task, **before** Pydantic validation, so opaque markers (for example
+`{"__resinsight_ref__": "EclipseCase", "case_id": 0}`) come through unchanged.
+Dates and datetimes become ISO 8601 strings, paths become strings, sets become
+sorted lists and non-string mapping keys become JSON key strings; binary values,
+NaN/infinity and keys that collide after conversion are rejected as invalid.
+Fields without a value fall back to `input_schema.properties.<field>.default`.
+**The output contains the input values, including any secrets.** This check
+does not run tasks or hooks and does not validate every configured value's
+runtime type. Loading YAML still imports
 Python modules (and nested workflows); **do not inspect untrusted YAML or plugins**
 under a privileged account. In JSON mode inspection failures have status
 `invalid`, an `error` object, and exit code 2. Without `--json`, inspection
