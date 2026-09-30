@@ -86,7 +86,7 @@ Inspection needs only the workflow YAML, so use it to find required fields and r
 .venv/bin/python -m taskmaestro workflow describe examples/agent_quickstart/workflow.yaml --json
 ```
 
-This reports the result task `double`, a root `add_one` with `config_fields: ["value"]`, the dependency on `add_one`, and schemas for each task. Add `--input examples/agent_quickstart/input.yaml` to check that required configuration fields are present; the output includes `provided_config_fields` **names**, not their values. Inspection does not execute tasks or instantiate hooks, but it **does import Python modules** named in YAML (including nested workflows). Only inspect trusted workflow files and plugins. Runtime input values are checked when the tasks run, not completely by inspection.
+This reports the result task `double`, a root `add_one` with `config_fields: ["value"]`, the dependency on `add_one`, and schemas for each task. Add `--input examples/agent_quickstart/input.yaml` to check an input file, which may still be incomplete; each task then reports `provided_config_fields` (names), `missing_config_fields` (declared `config_fields` the input does not set yet; `validate` and `run` reject these) and `config_values` (the raw values from `input.yaml`, before Pydantic validation, with dates as ISO 8601 strings). The output therefore **contains the input values, including any secrets**. Inspection does not execute tasks or instantiate hooks, but it **does import Python modules** named in YAML (including nested workflows). Only inspect trusted workflow files and plugins. Runtime input values are checked when the tasks run, not completely by inspection.
 
 ## Parse results and errors as JSON
 
