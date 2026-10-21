@@ -78,6 +78,13 @@ class ConfigLoadError(WorkflowRunnerError):
     """Raised when YAML config loading fails (parse errors, import failures, validation)."""
 
 
+class WorkflowLookupError(ConfigLoadError):
+    """A registered workflow name is unknown or its entry point cannot be loaded.
+
+    The message names the registered workflows and contains no input values.
+    """
+
+
 class PluginLoadError(WorkflowRunnerError):
     """Raised when an installed task or workflow entry point is invalid."""
 

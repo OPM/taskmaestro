@@ -13,11 +13,16 @@ from typing import Any
 
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
 
-from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
+from taskmaestro.discovery import (
+    get_registered_task,
+    registered_task_names,
+    registered_workflow_names,
+)
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowLookupError
 from taskmaestro.introspection import (
     TaskSchemaGenerator,
     dependency_spec,
+    describe_registered_workflow,
     describe_yaml_workflow,
     error_payload,
     jsonable,
@@ -26,14 +31,22 @@ from taskmaestro.job import JobStatus
 from taskmaestro.task import get_input_type, get_output_type
 from taskmaestro.yaml_config import (
     LoadedWorkflow,
+    load_registered_workflow,
     load_workflow_from_yaml,
     workflow_imports,
 )
 
+WORKFLOW_ARGUMENT_HELP = "Workflow YAML file, or the name of a registered workflow"
+
 
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("workflow", help="Path to the workflow YAML file")
+    parser.add_argument("workflow", help=WORKFLOW_ARGUMENT_HELP)
     parser.add_argument("--input", required=True, help="Path to the input YAML file")
+
+
+def _is_workflow_path(workflow: str) -> bool:
+    """Return True if a workflow argument is a YAML path rather than a registered name."""
+    return Path(workflow).suffix.lower() in (".yaml", ".yml") or Path(workflow).is_file()
 
 
 @contextmanager
@@ -44,6 +57,8 @@ def _workflow_imports(path: str) -> Iterator[None]:
 
 
 def _load(args: argparse.Namespace) -> LoadedWorkflow:
+    if not _is_workflow_path(args.workflow):
+        return load_registered_workflow(args.workflow, args.input)
     with _workflow_imports(args.workflow):
         return load_workflow_from_yaml(args.workflow, args.input)
 
@@ -149,10 +164,21 @@ def _tasks_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _workflow_list(args: argparse.Namespace) -> int:
+    names = sorted(registered_workflow_names())
+    if args.json:
+        print(json.dumps({"workflows": names}))
+    else:
+        print("\n".join(names))
+    return 0
+
+
 def _workflow_describe(args: argparse.Namespace) -> int:
-    description = describe_yaml_workflow(
-        Path(args.workflow), Path(args.input) if args.input else None
-    )
+    input_path = Path(args.input) if args.input else None
+    if _is_workflow_path(args.workflow):
+        description = describe_yaml_workflow(Path(args.workflow), input_path)
+    else:
+        description = describe_registered_workflow(args.workflow, input_path)
     print(json.dumps(description, indent=None if args.json else 2))
     return 0
 
@@ -218,12 +244,21 @@ def build_parser() -> argparse.ArgumentParser:
     describe_parser.add_argument("--json", action="store_true", help="Print single-line JSON")
     describe_parser.set_defaults(handler=_tasks_describe)
 
-    workflow_parser = subparsers.add_parser("workflow", help="Inspect YAML workflows")
+    workflow_parser = subparsers.add_parser(
+        "workflow", help="Inspect YAML and registered workflows"
+    )
     workflow_subparsers = workflow_parser.add_subparsers(dest="workflow_command", required=True)
+    workflow_list_parser = workflow_subparsers.add_parser(
+        "list", help="List registered workflow names"
+    )
+    workflow_list_parser.add_argument(
+        "--json", action="store_true", help="Print machine-readable JSON"
+    )
+    workflow_list_parser.set_defaults(handler=_workflow_list)
     workflow_describe_parser = workflow_subparsers.add_parser(
         "describe", help="Describe a workflow without running tasks"
     )
-    workflow_describe_parser.add_argument("workflow", help="Path to the workflow YAML file")
+    workflow_describe_parser.add_argument("workflow", help=WORKFLOW_ARGUMENT_HELP)
     workflow_describe_parser.add_argument(
         "--input",
         help="Optional input YAML; reports provided, missing and configured values per task",
@@ -247,13 +282,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.command in ("run", "validate")
             or (args.command == "workflow" and args.workflow_command == "describe")
         ):
+            # A lookup message only names workflows, so it is safe to report.
+            message = (
+                str(exc)
+                if isinstance(exc, WorkflowLookupError)
+                else "Workflow configuration is invalid"
+            )
             print(
                 json.dumps(
                     {
                         "status": "invalid",
-                        "error": _error(
-                            "configuration_error", exc, "Workflow configuration is invalid"
-                        ),
+                        "error": _error("configuration_error", exc, message),
                     }
                 )
             )

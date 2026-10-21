@@ -26,6 +26,7 @@ from taskmaestro.exceptions import (
     TaskOutputTypeError,
     TaskTimeoutError,
     WorkflowDefinitionError,
+    WorkflowLookupError,
     WorkflowRunnerError,
     WorkflowTaskError,
 )
@@ -39,6 +40,7 @@ from taskmaestro.workflow import Workflow, WorkflowBuilder
 from taskmaestro.workflow_task import workflow_task
 from taskmaestro.yaml_config import (
     LoadedWorkflow,
+    load_registered_workflow,
     load_workflow_from_yaml,
     run_workflow_from_yaml,
 )
@@ -75,11 +77,13 @@ __all__ = [
     "Workflow",
     "WorkflowBuilder",
     "WorkflowDefinitionError",
+    "WorkflowLookupError",
     "WorkflowRunnerError",
     "WorkflowTaskError",
     "collect",
     "get_registered_task",
     "get_registered_workflow",
+    "load_registered_workflow",
     "load_workflow_from_yaml",
     "registered_task_names",
     "registered_tasks",
