@@ -12,9 +12,10 @@ import pytest
 from pydantic import BaseModel
 from pydantic_core import core_schema
 
-from taskmaestro import ExecutionContext, ObjectModel, Task
+from taskmaestro import ExecutionContext, ObjectModel, Task, Workflow
 from taskmaestro.cli import _dependency_spec, _jsonable, main
 from taskmaestro.dependencies import CollectionRef, OutputRef
+from tests.test_discovery import ExampleTask
 
 
 class ExternalClient:
@@ -835,3 +836,181 @@ def test_python_dash_m_exit_code(tmp_path: Path) -> None:
     )
     assert completed.returncode == 1
     assert "Workflow failed at fail: intentional failure" in completed.stderr
+
+
+configured_workflow = (
+    Workflow.builder("example").add_task(ExampleTask, config_fields=["value"]).build()
+)
+
+
+@pytest.fixture
+def registered_workflows(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries = [
+        EntryPoint(
+            name="example",
+            value="tests.test_cli:configured_workflow",
+            group="taskmaestro.workflows",
+        ),
+        EntryPoint(name="broken", value="missing_module:workflow", group="taskmaestro.workflows"),
+    ]
+    monkeypatch.setattr(
+        "taskmaestro.discovery.entry_points",
+        lambda *, group: entries if group == "taskmaestro.workflows" else [],
+    )
+
+
+def _example_input(tmp_path: Path, text: str = "ExampleTask:\n  value: 4\n") -> Path:
+    input_path = tmp_path / "input.yaml"
+    input_path.write_text(text, encoding="utf-8")
+    return input_path
+
+
+def test_workflow_list(registered_workflows: None, capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["workflow", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"workflows": ["broken", "example"]}
+    assert main(["workflow", "list"]) == 0
+    assert capsys.readouterr().out == "broken\nexample\n"
+
+
+def test_workflow_list_empty(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [])
+
+    assert main(["workflow", "list", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"workflows": []}
+
+
+def test_registered_workflow_run_validate_and_graph(
+    registered_workflows: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    input_path = str(_example_input(tmp_path))
+
+    assert main(["run", "example", "--input", input_path, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "status": "completed",
+        "workflow": "example",
+        "result": {"value": 5},
+    }
+    assert main(["validate", "example", "--input", input_path, "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "valid"
+    assert main(["graph", "example", "--input", input_path]) == 0
+    assert "graph TD" in capsys.readouterr().out
+
+
+def test_registered_workflow_describe(
+    registered_workflows: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["workflow", "describe", "example", "--json"]) == 0
+    description = json.loads(capsys.readouterr().out)
+    assert description["workflow"] == "example"
+    assert description["source"] == {"kind": "entry_point", "name": "example"}
+    assert description["tasks"][0]["config_values"] is None
+
+    input_path = _example_input(tmp_path, "ExampleTask:\n")
+    assert main(["workflow", "describe", "example", "--input", str(input_path), "--json"]) == 0
+    task = json.loads(capsys.readouterr().out)["tasks"][0]
+    assert task["missing_config_fields"] == ["value"]
+    assert task["config_values"] == {}
+
+    input_path = _example_input(tmp_path)
+    assert main(["workflow", "describe", "example", "--input", str(input_path), "--json"]) == 0
+    task = json.loads(capsys.readouterr().out)["tasks"][0]
+    assert task["missing_config_fields"] == []
+    assert task["config_values"] == {"value": 4}
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["run", "unknown", "--input", "input.yaml", "--json"],
+        ["validate", "unknown", "--input", "input.yaml", "--json"],
+        ["workflow", "describe", "unknown", "--json"],
+    ],
+)
+def test_unknown_registered_workflow_reports_configuration_error(
+    registered_workflows: None, argv: list[str], capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(argv) == 2
+    error = json.loads(capsys.readouterr().out)
+    assert error["status"] == "invalid"
+    assert error["error"]["code"] == "configuration_error"
+    assert "'unknown'" in error["error"]["message"]
+    assert "registered workflows: broken, example" in error["error"]["message"]
+
+
+def test_unknown_registered_workflow_without_json(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("taskmaestro.discovery.entry_points", lambda *, group: [])
+
+    assert main(["graph", "unknown", "--input", "input.yaml"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "Configuration error:" in captured.err
+    assert "registered workflows: none" in captured.err
+
+
+def test_broken_registered_workflow_reports_configuration_error(
+    registered_workflows: None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["workflow", "describe", "broken", "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["code"] == "configuration_error"
+    assert "broken" in error["message"]
+
+
+@pytest.mark.parametrize(
+    ("text", "message"),
+    [
+        ("other:\n  value: 1\n", "'other' is not a task name"),
+        ("ExampleTask: 3\n", "must be a mapping or null"),
+        ("- 1\n", "must contain a mapping"),
+    ],
+)
+def test_registered_workflow_rejects_invalid_input(
+    registered_workflows: None,
+    tmp_path: Path,
+    text: str,
+    message: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    input_path = str(_example_input(tmp_path, text))
+
+    assert main(["validate", "example", "--input", input_path]) == 2
+    assert message in capsys.readouterr().err
+
+
+def test_registered_workflow_missing_config_fails_job_validation(
+    registered_workflows: None, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    input_path = str(_example_input(tmp_path, "ExampleTask:\n"))
+
+    assert main(["validate", "example", "--input", input_path, "--json"]) == 2
+    error = json.loads(capsys.readouterr().out)["error"]
+    assert error["message"] == "Workflow configuration is invalid"
+    assert error["issues"] == [{"field": "value", "code": "missing"}]
+
+
+def test_workflow_argument_that_is_an_existing_file_is_a_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, input_path = _files(tmp_path)
+    named = tmp_path / "example"
+    named.write_text(workflow.read_text(), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert main(["validate", "example", "--input", str(input_path), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["workflow"] == "cli_test"
+
+
+def test_yaml_workflow_describe_reports_source(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workflow, _input_path = _files(tmp_path)
+
+    assert main(["workflow", "describe", str(workflow), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["source"] == {
+        "kind": "yaml",
+        "path": str(workflow.resolve()),
+    }

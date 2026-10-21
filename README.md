@@ -627,6 +627,7 @@ WorkflowRunnerError (base)
 │   └── IncompleteInputError      # Missing fan-in field mappings
 ├── JobStateError                 # e.g., re-running a completed job
 ├── ConfigLoadError               # YAML config loading failure
+│   └── WorkflowLookupError       # Unknown or broken registered workflow name
 └── TaskExecutionError            # Runtime task failure
     ├── MappedTaskExecutionError  # One or more mapped items failed
     ├── TaskOutputTypeError       # Output type mismatch
@@ -635,14 +636,34 @@ WorkflowRunnerError (base)
 
 ## Command-Line Interface
 
-Installed packages provide a `taskmaestro` command for YAML workflows:
+Installed packages provide a `taskmaestro` command for YAML and registered workflows:
 
 ```bash
 taskmaestro validate workflow.yaml --input input.yaml
 taskmaestro graph workflow.yaml --input input.yaml
 taskmaestro run workflow.yaml --input input.yaml --log-level INFO
 taskmaestro workflow describe workflow.yaml --json
+taskmaestro workflow list --json
 ```
+
+Wherever a workflow path is accepted, you can also give the name of a workflow
+registered in the `taskmaestro.workflows` entry-point group (see
+[Plugin discovery](#plugin-discovery)):
+
+```bash
+taskmaestro workflow describe resinsight.completions --input input.yaml --json
+taskmaestro run resinsight.completions --input input.yaml --json
+```
+
+The argument is a YAML path if it ends in `.yaml`/`.yml` or names an existing
+file; otherwise it is looked up as a registered name. An unknown or broken name
+is a configuration error whose message lists the registered workflows. Input
+files work the same for both kinds, but registered workflows always run with a
+default `Runner` and `ExecutionContext`; their root tasks take input values only
+for declared `config_fields`. `workflow list` prints the registered names (one
+per line, or `{"workflows": [...]}` with `--json`) without importing the
+plugins, so one broken plugin does not break the list. In Python, use
+`load_registered_workflow(name, input_path)`.
 
 By default, `run` prints the final output as JSON and reports errors on stderr;
 `validate` prints a human-readable confirmation. `graph` prints Mermaid markup.
@@ -669,7 +690,9 @@ failures have status `failed` and `code: "task_failed"`. If a completed result
 cannot be encoded as JSON (e.g. a Python-only object), `run --json` returns
 `code: "serialization_error"`. Missing configuration fields produce `issues`
 with code `missing`; when no structured field metadata is available, `field`
-is `null`. Use text mode when you need the original exception message.
+is `null`. Use text mode when you need the original exception message. The
+exception is an unknown or broken registered workflow name: its `message`
+names the registered workflows.
 
 Exit codes: `0` success, `1` task or result-serialization failure, `2` workflow
 configuration failure. In JSON mode logs and ordinary Python `print()` output
@@ -686,6 +709,8 @@ instance includes its `name`, `python_type`, `depends_on` references (`task` /
 and Pydantic input/output schemas. Collection dependencies include their kind
 (`positional` or `keyed`) and member references. `python_type` identifies the
 loaded class; it may differ from the plugin entry-point identifier used in YAML.
+`source` tells where the workflow came from: `{"kind": "yaml", "path": "/abs/workflow.yaml"}`
+or `{"kind": "entry_point", "name": "resinsight.completions"}`.
 
 Pass `--input input.yaml` to check the input against the workflow. The input
 may be incomplete (for example a template whose runtime-picker fields a UI

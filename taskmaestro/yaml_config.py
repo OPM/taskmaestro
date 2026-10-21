@@ -16,8 +16,18 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
-from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
+from taskmaestro.discovery import (
+    get_registered_task,
+    get_registered_workflow,
+    registered_task_names,
+    registered_workflow_names,
+)
+from taskmaestro.exceptions import (
+    ConfigLoadError,
+    PluginLoadError,
+    WorkflowDefinitionError,
+    WorkflowLookupError,
+)
 from taskmaestro.hooks.base import BaseHook
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.mapping import TaskMap
@@ -266,6 +276,34 @@ class LoadedWorkflow:
 # --- Main loader ---
 
 
+def _read_input_yaml(input_path: Path) -> dict[str, Any]:
+    """Parse an input YAML file, which must contain a mapping."""
+    try:
+        raw_input = _yaml_load(input_path.read_text())
+    except yaml.YAMLError as exc:
+        raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
+    except OSError as exc:
+        raise ConfigLoadError(f"Cannot read input file '{input_path}': {exc}") from exc
+    if not isinstance(raw_input, dict):
+        raise ConfigLoadError("Input YAML file must contain a mapping")
+    return raw_input
+
+
+def _check_input_keys(raw_input: dict[str, Any], task_names: typing.Collection[str]) -> None:
+    """Check that input keys are task names and their values mappings or null."""
+    for key, value in raw_input.items():
+        if key not in task_names:
+            raise ConfigLoadError(
+                f"Input top-level key '{key}' is not a task name "
+                f"(known tasks: {sorted(task_names)})"
+            )
+        if value is not None and not isinstance(value, dict):
+            raise ConfigLoadError(
+                f"Input value for task '{key}' must be a mapping or null "
+                f"(got {type(value).__name__})"
+            )
+
+
 def _load_workflow_only(
     workflow_path: Path,
     input_path: Path | None = None,
@@ -305,15 +343,7 @@ def _load_workflow_only(
     # 2. Parse input YAML (optional for inner workflows)
     raw_input: dict[str, Any] = {}
     if input_path is not None:
-        try:
-            raw_input = _yaml_load(input_path.read_text())
-        except yaml.YAMLError as exc:
-            raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
-        except OSError as exc:
-            raise ConfigLoadError(f"Cannot read input file '{input_path}': {exc}") from exc
-
-        if not isinstance(raw_input, dict):
-            raise ConfigLoadError("Input YAML file must contain a mapping")
+        raw_input = _read_input_yaml(input_path)
 
     # 3. Schema validation
     try:
@@ -414,17 +444,7 @@ def _load_workflow_only(
     # 6b. Input YAML always uses per-task configuration. Top-level keys are
     # registered task instance names and each value is a mapping or null.
     entry_by_name = {entry.registered_name: entry for entry in entries}
-    for key, value in raw_input.items():
-        if key not in entry_by_name:
-            raise ConfigLoadError(
-                f"Input top-level key '{key}' is not a task name "
-                f"(known tasks: {sorted(entry_by_name)})"
-            )
-        if value is not None and not isinstance(value, dict):
-            raise ConfigLoadError(
-                f"Input value for task '{key}' must be a mapping or null "
-                f"(got {type(value).__name__})"
-            )
+    _check_input_keys(raw_input, entry_by_name)
 
     per_task_data: dict[str, dict[str, Any]] = {}
     per_task_cfg_fields: dict[str, list[str]] = {}
@@ -576,15 +596,7 @@ def load_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) -
         raise ConfigLoadError("YAML file must contain a mapping at top level")
 
     # 2. Parse input YAML
-    try:
-        raw_input = _yaml_load(input_path.read_text())
-    except yaml.YAMLError as exc:
-        raise ConfigLoadError(f"Input YAML parse error: {exc}") from exc
-    except OSError as exc:
-        raise ConfigLoadError(f"Cannot read input file '{input_path}': {exc}") from exc
-
-    if not isinstance(raw_input, dict):
-        raise ConfigLoadError("Input YAML file must contain a mapping")
+    _read_input_yaml(input_path)
 
     # 3. Schema validation (for runner/context sections)
     try:
@@ -647,6 +659,46 @@ def run_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) ->
 
 
 load_workflow_only = _load_workflow_only
+
+
+def registered_workflow(name: str) -> Workflow:
+    """Load a registered workflow, raising WorkflowLookupError if it is unknown or invalid.
+
+    The error message lists the registered workflow names.
+    """
+    try:
+        return get_registered_workflow(name)
+    except PluginLoadError as exc:
+        names = sorted(registered_workflow_names())
+        available = ", ".join(names) if names else "none"
+        raise WorkflowLookupError(f"{exc} (registered workflows: {available})") from exc
+
+
+def load_input_configuration(workflow: Workflow, input_path: str | Path) -> JobConfiguration:
+    """Read an input YAML file as per-task configuration for ``workflow``.
+
+    The input is checked the same way as for YAML workflows: top-level keys
+    must be task names and each value a mapping or null.
+    """
+    raw_input = _read_input_yaml(Path(input_path))
+    _check_input_keys(raw_input, {name for name, _task in workflow.topological_order()})
+    return JobConfiguration({name: dict(values or {}) for name, values in raw_input.items()})
+
+
+def load_registered_workflow(name: str, input_path: str | Path) -> LoadedWorkflow:
+    """Load a registered workflow with an input YAML file, ready to run.
+
+    Registered workflows have no ``runner:`` or ``context:`` sections, so the
+    workflow runs with a default ``Runner`` and ``ExecutionContext``.
+    Raises ConfigLoadError for an unknown workflow or invalid input.
+    """
+    workflow = registered_workflow(name)
+    job_configuration = load_input_configuration(workflow, input_path)
+    try:
+        job = Job(workflow, EmptyConfig(), job_configuration=job_configuration)
+    except WorkflowDefinitionError as exc:
+        raise ConfigLoadError(f"Job validation failed: {exc}") from exc
+    return LoadedWorkflow(workflow=workflow, runner=Runner(), job=job, context=ExecutionContext())
 
 
 @contextmanager

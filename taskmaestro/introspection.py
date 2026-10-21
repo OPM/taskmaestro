@@ -11,7 +11,8 @@ import inspect
 import json
 import math
 import sys
-from contextlib import redirect_stdout
+from collections.abc import Iterator
+from contextlib import contextmanager, redirect_stdout
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path, PurePath
@@ -27,7 +28,12 @@ from taskmaestro.exceptions import ConfigLoadError, WorkflowDefinitionError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.task import get_input_type, get_output_type
 from taskmaestro.workflow import Workflow
-from taskmaestro.yaml_config import load_workflow_only, workflow_imports
+from taskmaestro.yaml_config import (
+    load_input_configuration,
+    load_workflow_only,
+    registered_workflow,
+    workflow_imports,
+)
 
 
 def python_type_name(cls: type[Any]) -> str:
@@ -202,55 +208,11 @@ def _fill_missing(
     return JobConfiguration(filled)
 
 
-def describe_yaml_workflow(
-    workflow_path: Path,
-    input_path: Path | None = None,
-    schema_generator: type[GenerateJsonSchema] = TaskSchemaGenerator,
-) -> dict[str, Any]:
-    """Describe a YAML workflow without running any task.
-
-    With ``input_path`` the description also reports provided, missing and
-    configured values per task. Raises ConfigLoadError if the workflow or input
-    is invalid; output printed while importing task modules goes to stderr.
-    """
+@contextmanager
+def _describe_errors() -> Iterator[None]:
+    """Report describe failures as ConfigLoadError."""
     try:
-        with redirect_stdout(sys.stderr), workflow_imports(Path(workflow_path).resolve().parent):
-            workflow, config = load_workflow_only(Path(workflow_path), input_path)
-            configured = None
-            missing = None
-            values = None
-            if input_path is not None:
-                assert config is not None
-                missing = missing_config_fields(workflow, config)
-                # Check the rest of the supplied config (map sources, root inputs)
-                # without constructing hooks or executing any tasks. Missing config
-                # fields are reported rather than rejected: the input may be a
-                # template whose remaining fields the caller fills in.
-                Job(
-                    workflow,
-                    EmptyConfig(),
-                    job_configuration=_fill_missing(workflow, config, missing),
-                )
-                configured = {
-                    name: sorted(config.config_fields_for_task(name))
-                    for name, _task in workflow.topological_order()
-                }
-                # Raw input values, before Pydantic validation, so opaque or
-                # runtime-only markers pass through unchanged.
-                values = {
-                    name: {
-                        field: jsonable(value, f"{name}.{field}")
-                        for field, value in sorted(config.get_config_for_task(name).items())
-                    }
-                    for name, _task in workflow.topological_order()
-                }
-            return describe_workflow(
-                workflow,
-                configured=configured,
-                missing=missing,
-                values=values,
-                schema_generator=schema_generator,
-            )
+        yield
     except WorkflowDefinitionError as exc:
         raise ConfigLoadError(f"Job validation failed: {exc}") from exc
     except (
@@ -260,6 +222,93 @@ def describe_yaml_workflow(
         PydanticSchemaGenerationError,
     ) as exc:
         raise ConfigLoadError(f"Cannot describe workflow: {exc}") from exc
+
+
+def _describe_loaded(
+    workflow: Workflow,
+    config: JobConfiguration | None,
+    schema_generator: type[GenerateJsonSchema],
+    source: dict[str, str],
+) -> dict[str, Any]:
+    """Describe a loaded workflow and, if given, its input configuration."""
+    configured = None
+    missing = None
+    values = None
+    if config is not None:
+        missing = missing_config_fields(workflow, config)
+        # Check the rest of the supplied config (map sources, root inputs)
+        # without constructing hooks or executing any tasks. Missing config
+        # fields are reported rather than rejected: the input may be a
+        # template whose remaining fields the caller fills in.
+        Job(
+            workflow,
+            EmptyConfig(),
+            job_configuration=_fill_missing(workflow, config, missing),
+        )
+        configured = {
+            name: sorted(config.config_fields_for_task(name))
+            for name, _task in workflow.topological_order()
+        }
+        # Raw input values, before Pydantic validation, so opaque or
+        # runtime-only markers pass through unchanged.
+        values = {
+            name: {
+                field: jsonable(value, f"{name}.{field}")
+                for field, value in sorted(config.get_config_for_task(name).items())
+            }
+            for name, _task in workflow.topological_order()
+        }
+    description = describe_workflow(
+        workflow,
+        configured=configured,
+        missing=missing,
+        values=values,
+        schema_generator=schema_generator,
+    )
+    description["source"] = source
+    return description
+
+
+def describe_yaml_workflow(
+    workflow_path: Path,
+    input_path: Path | None = None,
+    schema_generator: type[GenerateJsonSchema] = TaskSchemaGenerator,
+) -> dict[str, Any]:
+    """Describe a YAML workflow without running any task.
+
+    With ``input_path`` the description also reports provided, missing and
+    configured values per task. ``source`` is ``{"kind": "yaml", "path": ...}``.
+    Raises ConfigLoadError if the workflow or input is invalid; output printed
+    while importing task modules goes to stderr.
+    """
+    path = Path(workflow_path).resolve()
+    with _describe_errors(), redirect_stdout(sys.stderr), workflow_imports(path.parent):
+        workflow, config = load_workflow_only(Path(workflow_path), input_path)
+        return _describe_loaded(
+            workflow,
+            config if input_path is not None else None,
+            schema_generator,
+            {"kind": "yaml", "path": str(path)},
+        )
+
+
+def describe_registered_workflow(
+    name: str,
+    input_path: Path | None = None,
+    schema_generator: type[GenerateJsonSchema] = TaskSchemaGenerator,
+) -> dict[str, Any]:
+    """Describe a workflow registered in the ``taskmaestro.workflows`` entry-point group.
+
+    Like ``describe_yaml_workflow``; ``source`` is
+    ``{"kind": "entry_point", "name": ...}``. Raises ConfigLoadError for an
+    unknown workflow or invalid input.
+    """
+    with _describe_errors(), redirect_stdout(sys.stderr):
+        workflow = registered_workflow(name)
+        config = load_input_configuration(workflow, input_path) if input_path else None
+        return _describe_loaded(
+            workflow, config, schema_generator, {"kind": "entry_point", "name": name}
+        )
 
 
 def task_descriptor(
