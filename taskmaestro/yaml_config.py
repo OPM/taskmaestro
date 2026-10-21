@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import importlib
+import sys
 import typing
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -140,9 +143,34 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         super().flatten_mapping(node)
 
 
-def _yaml_load(text: str) -> Any:
+def yaml_load(text: str) -> Any:
     """Safely parse YAML while rejecting duplicate mapping keys."""
     return yaml.load(text, Loader=_UniqueKeyLoader)
+
+
+_yaml_load = yaml_load
+
+
+def resolve_task(
+    task_id: str, installed_task_names: set[str] | None = None
+) -> type[Task[Any, Any]]:
+    """Resolve the ``task:`` value of a YAML file to a Task class.
+
+    A registered entry-point name wins; otherwise ``task_id`` is imported as a
+    dotted class path. Raises ConfigLoadError if it cannot be resolved.
+    """
+    if installed_task_names is None:
+        installed_task_names = registered_task_names()
+    try:
+        if task_id in installed_task_names:
+            cls: type[Task[Any, Any]] = get_registered_task(task_id)
+        else:
+            cls = import_class(task_id)
+    except PluginLoadError as exc:
+        raise ConfigLoadError(str(exc)) from exc
+    if not (isinstance(cls, type) and issubclass(cls, Task)):
+        raise ConfigLoadError(f"'{task_id}' is not a Task subclass")
+    return cls
 
 
 def import_class(dotted_path: str) -> type[Any]:
@@ -316,15 +344,7 @@ def _load_workflow_only(
             key = task_config.workflow
         else:
             assert task_config.task is not None
-            try:
-                if task_config.task in installed_task_names:
-                    cls = get_registered_task(task_config.task)
-                else:
-                    cls = import_class(task_config.task)
-            except PluginLoadError as exc:
-                raise ConfigLoadError(str(exc)) from exc
-            if not (isinstance(cls, type) and issubclass(cls, Task)):
-                raise ConfigLoadError(f"'{task_config.task}' is not a Task subclass")
+            cls = resolve_task(task_config.task, installed_task_names)
             key = task_config.task
         registered_name = task_config.name if task_config.name else cls.name
         entries.append(_Entry(task_config, cls, key, registered_name))
@@ -624,3 +644,17 @@ def run_workflow_from_yaml(workflow_path: str | Path, input_path: str | Path) ->
     """Load and run a workflow from a workflow YAML file and an input YAML file in one step."""
     loaded = load_workflow_from_yaml(workflow_path, input_path)
     return loaded.run()
+
+
+load_workflow_only = _load_workflow_only
+
+
+@contextmanager
+def workflow_imports(directory: str | Path) -> Iterator[None]:
+    """Make task modules in ``directory`` importable for the duration of loading."""
+    original_path = sys.path.copy()
+    sys.path.insert(0, str(Path(directory).resolve()))
+    try:
+        yield
+    finally:
+        sys.path[:] = original_path

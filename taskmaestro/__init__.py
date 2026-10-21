@@ -1,6 +1,6 @@
 """Workflow Runner: typed DAG task workflows with Pydantic models."""
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import OutputHandle, TaskHandle, collect
@@ -17,6 +17,7 @@ from taskmaestro.discovery import (
 from taskmaestro.exceptions import (
     ConfigLoadError,
     CycleDetectedError,
+    DefinitionError,
     IncompleteInputError,
     JobStateError,
     MappedTaskExecutionError,
@@ -47,6 +48,7 @@ __all__ = [
     "WORKFLOW_ENTRY_POINT_GROUP",
     "ConfigLoadError",
     "CycleDetectedError",
+    "DefinitionError",
     "EmptyConfig",
     "ExecutionContext",
     "HookError",

@@ -80,3 +80,19 @@ class ConfigLoadError(WorkflowRunnerError):
 
 class PluginLoadError(WorkflowRunnerError):
     """Raised when an installed task or workflow entry point is invalid."""
+
+
+class DefinitionError(WorkflowRunnerError):
+    """Raised when a workflow definition cannot be loaded from or saved to YAML.
+
+    ``task`` and ``field`` name the offending task and input field, if known.
+    """
+
+    def __init__(self, message: str, *, task: str | None = None, field: str | None = None) -> None:
+        super().__init__(message)
+        self.message = message
+        self.task = task
+        self.field = field
+
+    def to_json(self) -> dict[str, str | None]:
+        return {"message": self.message, "task": self.task, "field": self.field}

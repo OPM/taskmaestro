@@ -26,7 +26,9 @@ mypy taskmaestro               # type check (strict mode)
 | `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles, output references, `collect()`, mapped-task configuration |
 | `taskmaestro/workflow_task.py` | Nested workflows wrapped as tasks |
 | `taskmaestro/yaml_config.py` | YAML parsing, task imports, workflow and input validation |
-| `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`, `tasks list/describe`, `workflow describe`), plugin entry-point discovery |
+| `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`, `tasks list/describe`, `workflow describe`), plugin entry-point discovery (`load_registry` collects broken entry points instead of raising) |
+| `taskmaestro/introspection.py` | Public JSON helpers: `describe_workflow`, `describe_yaml_workflow`, `task_descriptor`, `TaskSchemaGenerator` (subclass and override `type_annotations` to add schema keys), `jsonable`, `error_payload` |
+| `taskmaestro/definition.py` | Editable graph form of workflow YAML: `load_definition`, `definition_from_workflow`, `write_definition` (atomic, optional `.bak`, `value_filter`); raises `DefinitionError` |
 | `taskmaestro/job.py` | `Job[C]`, `JobStatus`, `TaskStatus`, `TaskResult` dataclass |
 | `taskmaestro/runner.py` | `Runner` — topological execution, timeout via `signal.alarm`, hook dispatch |
 | `taskmaestro/hooks/base.py` | `Event` StrEnum, `Hook` protocol, `BaseHook` no-op base |
