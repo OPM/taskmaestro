@@ -33,7 +33,8 @@ def _safe_type_name(tp: Any, context_cls: type | None = None) -> str:
     if module_name and module_name in sys.modules:
         mod = sys.modules[module_name]
         for attr_name, attr_val in list(vars(mod).items()):
-            if attr_val is tp and not attr_name.startswith("_"):
+            # Pydantic may also register the model under its bracketed name.
+            if attr_val is tp and attr_name.isidentifier() and not attr_name.startswith("_"):
                 return attr_name
     return name.replace("[", "&lsaquo;").replace("]", "&rsaquo;")
 
