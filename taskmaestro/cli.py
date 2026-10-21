@@ -5,27 +5,30 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import math
 import sys
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager, redirect_stdout
-from dataclasses import asdict
-from datetime import date
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Any
 
-from pydantic import ValidationError
 from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerationError
-from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
-from pydantic_core import core_schema
 
-from taskmaestro.dependencies import CollectionRef, OutputRef
 from taskmaestro.discovery import get_registered_task, registered_task_names
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowDefinitionError
-from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus
+from taskmaestro.exceptions import ConfigLoadError, PluginLoadError
+from taskmaestro.introspection import (
+    TaskSchemaGenerator,
+    dependency_spec,
+    describe_yaml_workflow,
+    error_payload,
+    jsonable,
+)
+from taskmaestro.job import JobStatus
 from taskmaestro.task import get_input_type, get_output_type
-from taskmaestro.workflow import Workflow
-from taskmaestro.yaml_config import LoadedWorkflow, _load_workflow_only, load_workflow_from_yaml
+from taskmaestro.yaml_config import (
+    LoadedWorkflow,
+    load_workflow_from_yaml,
+    workflow_imports,
+)
 
 
 def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
@@ -36,12 +39,8 @@ def _add_workflow_arguments(parser: argparse.ArgumentParser) -> None:
 @contextmanager
 def _workflow_imports(path: str) -> Iterator[None]:
     """Make task modules next to a YAML file importable for the duration of loading."""
-    original_path = sys.path.copy()
-    sys.path.insert(0, str(Path(path).resolve().parent))
-    try:
+    with workflow_imports(Path(path).resolve().parent):
         yield
-    finally:
-        sys.path[:] = original_path
 
 
 def _load(args: argparse.Namespace) -> LoadedWorkflow:
@@ -49,31 +48,10 @@ def _load(args: argparse.Namespace) -> LoadedWorkflow:
         return load_workflow_from_yaml(args.workflow, args.input)
 
 
-def _error(code: str, exc: Exception, message: str, *, task: str | None = None) -> dict[str, Any]:
-    """Return safe diagnostics from an exception and its causes."""
-    issues: list[dict[str, str]] = []
-    cause: BaseException | None = exc
-    while cause is not None:
-        if isinstance(cause, ValidationError):
-            issues = [
-                {"field": ".".join(map(str, issue["loc"])), "code": issue["type"]}
-                for issue in cause.errors(include_input=False, include_context=False)
-            ]
-            break
-        if isinstance(cause, WorkflowDefinitionError):
-            task = task or cause.task_name
-            issues = [{"field": field, "code": "missing"} for field in cause.fields]
-            if issues:
-                break
-        cause = cause.__cause__
-    return {
-        "code": code,
-        "type": type(exc).__name__,
-        "message": message,
-        "task": task,
-        "field": issues[0]["field"] if issues else None,
-        "issues": issues,
-    }
+_error = error_payload
+_jsonable = jsonable
+_dependency_spec = dependency_spec
+_TaskSchemaGenerator = TaskSchemaGenerator
 
 
 def _run(args: argparse.Namespace) -> int:
@@ -171,203 +149,10 @@ def _tasks_list(args: argparse.Namespace) -> int:
     return 0
 
 
-class _TaskSchemaGenerator(GenerateJsonSchema):
-    """Describe runtime-only Python objects without pretending they accept JSON."""
-
-    def is_instance_schema(self, schema: core_schema.IsInstanceSchema) -> JsonSchemaValue:
-        cls = schema["cls"]
-        return {
-            "not": {},  # No JSON value can satisfy an isinstance check for this object.
-            "x-taskmaestro-opaque": True,
-            "x-taskmaestro-python-type": f"{cls.__module__}.{cls.__qualname__}",
-        }
-
-
-def _output_ref(ref: OutputRef) -> dict[str, str | None]:
-    return {"task": ref.task_name, "field": ref.output_field}
-
-
-def _dependency_spec(deps: Any) -> Any:
-    """Render validated dependencies, including field routing and collections."""
-    if deps is None:
-        return None
-    if isinstance(deps, str):
-        return {"task": deps, "field": None}
-    if isinstance(deps, tuple):
-        return {"task": deps[0], "field": deps[1]}
-    result: dict[str, Any] = {}
-    for field, ref in deps.items():
-        if isinstance(ref, CollectionRef):
-            members: list[Any] | dict[str, Any]
-            if ref.kind == "keyed":
-                members = {key: _output_ref(item) for key, item in ref.keyed_members}
-            else:
-                members = [_output_ref(item) for item in ref.positional_members]
-            result[field] = {"collect": {"kind": ref.kind, "members": members}}
-        elif isinstance(ref, tuple):
-            result[field] = {"task": ref[0], "field": ref[1]}
-        else:
-            result[field] = {"task": ref, "field": None}
-    return result
-
-
-def _jsonable_key(key: object, path: str) -> str:
-    """Convert a YAML mapping key to the JSON object key it would get."""
-    value = _jsonable(key, path)
-    if isinstance(value, str):
-        return value
-    if isinstance(value, bool | int | float) or value is None:
-        return json.dumps(value)
-    raise TypeError(f"Configuration value '{path}' has an unsupported mapping key type")
-
-
-def _jsonable(value: object, path: str) -> Any:
-    """Convert a raw configuration value (as loaded from YAML) to plain JSON data.
-
-    Dates and datetimes become ISO 8601 strings and paths become strings;
-    everything else must already be JSON-compatible. ``path`` names the value
-    in error messages, which deliberately never include the value itself.
-    """
-    if value is None or isinstance(value, bool | int | str):
-        return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError(f"Configuration value '{path}' is not a finite number")
-        return value
-    if isinstance(value, date):  # Includes datetime.
-        return value.isoformat()
-    if isinstance(value, PurePath):
-        return str(value)
-    if isinstance(value, dict):
-        result: dict[str, Any] = {}
-        for key, item in value.items():
-            json_key = _jsonable_key(key, path)
-            if json_key in result:
-                raise ValueError(
-                    f"Configuration value '{path}' has keys that collide as JSON key '{json_key}'"
-                )
-            result[json_key] = _jsonable(item, f"{path}.{json_key}")
-        return result
-    if isinstance(value, list | tuple):
-        return [_jsonable(item, f"{path}[{index}]") for index, item in enumerate(value)]
-    if isinstance(value, set | frozenset):
-        items = [_jsonable(item, f"{path}[]") for item in value]
-        try:
-            return sorted(items)
-        except TypeError:
-            # Mixed types: order by canonical JSON text so output is deterministic.
-            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
-    raise TypeError(f"Configuration value '{path}' has unsupported type {type(value).__name__}")
-
-
-def _missing_config_fields(workflow: Workflow, config: JobConfiguration) -> dict[str, list[str]]:
-    """Return the declared config fields that the input does not supply, per task."""
-    return {
-        name: sorted(workflow.get_config_fields(name) - config.config_fields_for_task(name))
-        for name, _task in workflow.topological_order()
-    }
-
-
-def _fill_missing(
-    workflow: Workflow, config: JobConfiguration, missing: dict[str, list[str]]
-) -> JobConfiguration:
-    """Return a copy of ``config`` with placeholder values for missing config fields.
-
-    ``Job`` only checks that these fields are present, so placeholders let it run
-    its remaining validation. Map sources get no placeholder, so a missing one is
-    still rejected with its own error.
-    """
-    filled: dict[str, dict[str, Any]] = {}
-    for name, fields in missing.items():
-        task_map = workflow.get_task_map(name)
-        map_source = task_map.over if task_map is not None else None
-        placeholders = {field: None for field in fields if field != map_source}
-        filled[name] = {**placeholders, **config.get_config_for_task(name)}
-    return JobConfiguration(filled)
-
-
-def _workflow_description(
-    workflow: Workflow,
-    *,
-    configured: dict[str, list[str]] | None,
-    missing: dict[str, list[str]] | None = None,
-    values: dict[str, dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    tasks: list[dict[str, Any]] = []
-    for name, task in workflow.topological_order():
-        input_type = get_input_type(task)
-        output_type = workflow.get_output_annotation(name)
-        task_map = workflow.get_task_map(name)
-        tasks.append(
-            {
-                "name": name,
-                "python_type": f"{task.__module__}.{task.__qualname__}",
-                "depends_on": _dependency_spec(workflow.get_dependencies(name)),
-                "config_fields": sorted(workflow.get_config_fields(name)),
-                "provided_config_fields": configured[name] if configured is not None else None,
-                "missing_config_fields": missing[name] if missing is not None else None,
-                "config_values": values[name] if values is not None else None,
-                "required_input_fields": sorted(
-                    field for field, info in input_type.model_fields.items() if info.is_required()
-                ),
-                "map": asdict(task_map) if task_map is not None else None,
-                "input_schema": input_type.model_json_schema(
-                    schema_generator=_TaskSchemaGenerator
-                ),
-                "output_schema": output_type.model_json_schema(
-                    schema_generator=_TaskSchemaGenerator
-                ),
-            }
-        )
-    return {"workflow": workflow.name, "result_task": workflow.result_task_name, "tasks": tasks}
-
-
 def _workflow_describe(args: argparse.Namespace) -> int:
-    try:
-        with redirect_stdout(sys.stderr), _workflow_imports(args.workflow):
-            workflow, config = _load_workflow_only(
-                Path(args.workflow), Path(args.input) if args.input else None
-            )
-            configured = None
-            missing = None
-            values = None
-            if args.input is not None:
-                assert config is not None
-                missing = _missing_config_fields(workflow, config)
-                # Check the rest of the supplied config (map sources, root inputs)
-                # without constructing hooks or executing any tasks. Missing config
-                # fields are reported rather than rejected: the input may be a
-                # template whose remaining fields the caller fills in.
-                Job(
-                    workflow,
-                    EmptyConfig(),
-                    job_configuration=_fill_missing(workflow, config, missing),
-                )
-                configured = {
-                    name: sorted(config.config_fields_for_task(name))
-                    for name, _task in workflow.topological_order()
-                }
-                # Raw input values, before Pydantic validation, so opaque or
-                # runtime-only markers pass through unchanged.
-                values = {
-                    name: {
-                        field: _jsonable(value, f"{name}.{field}")
-                        for field, value in sorted(config.get_config_for_task(name).items())
-                    }
-                    for name, _task in workflow.topological_order()
-                }
-            description = _workflow_description(
-                workflow, configured=configured, missing=missing, values=values
-            )
-    except WorkflowDefinitionError as exc:
-        raise ConfigLoadError(f"Job validation failed: {exc}") from exc
-    except (
-        TypeError,
-        ValueError,
-        PydanticInvalidForJsonSchema,
-        PydanticSchemaGenerationError,
-    ) as exc:
-        raise ConfigLoadError(f"Cannot describe workflow: {exc}") from exc
+    description = describe_yaml_workflow(
+        Path(args.workflow), Path(args.input) if args.input else None
+    )
     print(json.dumps(description, indent=None if args.json else 2))
     return 0
 

@@ -23,6 +23,7 @@ from taskmaestro import (
     registered_workflow_names,
     registered_workflows,
 )
+from taskmaestro.discovery import load_registry
 
 
 class Input(BaseModel):
@@ -105,6 +106,52 @@ def test_rejects_duplicate_names(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(PluginLoadError, match="Multiple entry points"):
         registered_tasks()
+
+
+def test_load_registry_collects_problems_and_keeps_good_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entries: list[Any] = [
+        _entry_point("good", "tests.test_discovery:ExampleTask", "taskmaestro.tasks"),
+        _entry_point("good", "tests.test_discovery:ExampleTask", "taskmaestro.tasks"),
+        _entry_point("broken", "tests.test_discovery:missing", "taskmaestro.tasks"),
+    ]
+    monkeypatch.setattr(
+        "taskmaestro.discovery.entry_points",
+        lambda *, group: entries if group == "taskmaestro.tasks" else [],
+    )
+
+    registry = load_registry()
+
+    assert set(registry.tasks) == {"good"}
+    assert registry.workflows == {}
+    assert [(p.kind, p.name) for p in registry.problems] == [("task", "broken"), ("task", "good")]
+    assert registry.problems[1].message == "Duplicate task id"
+
+
+def test_load_registry_checks_entry_point_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    entries: dict[str, list[Any]] = {
+        "taskmaestro.tasks": [
+            _entry_point("not_a_task", "tests.test_discovery:Input", "taskmaestro.tasks")
+        ],
+        "taskmaestro.workflows": [
+            _entry_point("good", "tests.test_discovery:example_workflow", "taskmaestro.workflows"),
+            _entry_point("wrong", "tests.test_discovery:ExampleTask", "taskmaestro.workflows"),
+        ],
+    }
+    monkeypatch.setattr(
+        "taskmaestro.discovery.entry_points", lambda *, group: entries.get(group, [])
+    )
+
+    registry = load_registry()
+
+    assert registry.tasks == {}
+    assert registry.workflows == {"good": example_workflow}
+    assert [(p.kind, p.name, p.message) for p in registry.problems] == [
+        ("task", "not_a_task", "The entry point is not a Task subclass"),
+        ("workflow", "wrong", "The entry point is not a Workflow"),
+    ]
+    assert load_registry(include_workflows=False).workflows == {}
 
 
 def test_reports_entry_point_load_failure(monkeypatch: pytest.MonkeyPatch) -> None:

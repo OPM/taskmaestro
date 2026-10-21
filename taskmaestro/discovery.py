@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from importlib.metadata import EntryPoint, entry_points
 from typing import Any
 
@@ -94,3 +95,60 @@ def get_registered_workflow(name: str) -> Workflow:
     if entry_point is None:
         raise PluginLoadError(f"No workflow entry point named '{name}' is registered")
     return _load(entry_point, Workflow, "workflow")
+
+
+@dataclass(frozen=True)
+class RegistryProblem:
+    """A registered entry point that could not be loaded."""
+
+    kind: str  # "task" or "workflow"
+    name: str
+    entry_point: str
+    message: str
+
+
+@dataclass(frozen=True)
+class Registry:
+    """Everything that loaded from the entry-point groups, plus what did not."""
+
+    tasks: dict[str, type[Task[Any, Any]]]
+    workflows: dict[str, Workflow]
+    problems: list[RegistryProblem]
+
+
+def load_registry(*, include_workflows: bool = True) -> Registry:
+    """Load all registered tasks and workflows, collecting failures instead of raising.
+
+    Unlike ``registered_tasks``/``registered_workflows``, one broken or duplicate
+    entry point does not hide the others. Entry points are visited in name
+    order and the first of a duplicated name wins.
+    """
+    problems: list[RegistryProblem] = []
+
+    def load_group[T](group: str, kind: str, expected: type[T]) -> dict[str, T]:
+        loaded: dict[str, T] = {}
+        for entry_point in sorted(entry_points(group=group), key=lambda ep: ep.name):
+            name = entry_point.name
+            if name in loaded:
+                problems.append(
+                    RegistryProblem(kind, name, entry_point.value, f"Duplicate {kind} id")
+                )
+                continue
+            try:
+                value: Any = entry_point.load()
+                if kind == "task":
+                    if not (isinstance(value, type) and issubclass(value, Task)):
+                        raise TypeError("The entry point is not a Task subclass")
+                elif not isinstance(value, expected):
+                    raise TypeError("The entry point is not a Workflow")
+            except Exception as exc:
+                problems.append(RegistryProblem(kind, name, entry_point.value, str(exc)))
+                continue
+            loaded[name] = value
+        return loaded
+
+    tasks = load_group(TASK_ENTRY_POINT_GROUP, "task", type)
+    workflows = (
+        load_group(WORKFLOW_ENTRY_POINT_GROUP, "workflow", Workflow) if include_workflows else {}
+    )
+    return Registry(tasks=tasks, workflows=workflows, problems=problems)
