@@ -30,6 +30,14 @@ class IncompleteInputError(WorkflowDefinitionError):
     """Fan-in input has required fields not mapped to any upstream task."""
 
 
+class ContextValueMissingError(WorkflowDefinitionError):
+    """A ``ContextFlag`` key is not registered on the execution context.
+
+    Raised by ``Runner.run`` before any task starts. The message only names
+    context keys and task names.
+    """
+
+
 class JobStateError(WorkflowRunnerError):
     """Job not in expected state (e.g., attempting to re-run a completed job)."""
 

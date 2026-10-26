@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionRef, FirstOfRef, OutputRef
 from taskmaestro.exceptions import (
+    ContextValueMissingError,
     JobStateError,
     MappedTaskExecutionError,
     ResultTaskSkippedError,
@@ -24,7 +25,7 @@ from taskmaestro.exceptions import (
     TaskTimeoutError,
 )
 from taskmaestro.hooks.base import BaseHook, Event
-from taskmaestro.job import Job, JobStatus, TaskResult, TaskStatus
+from taskmaestro.job import Job, JobConfiguration, JobStatus, TaskResult, TaskStatus
 from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.task import Task, get_input_type, get_output_type
 from taskmaestro.workflow import Workflow
@@ -196,6 +197,7 @@ class Runner:
 
         ctx = ctx or ExecutionContext()
         workflow = job.workflow
+        self._check_context_flags(job, ctx)
 
         self._emit(Event.JOB_START, job)
         job.status = JobStatus.RUNNING
@@ -347,6 +349,48 @@ class Runner:
         job.completed_at = datetime.now()
         self._emit(Event.JOB_COMPLETE, job)
         return job
+
+    @staticmethod
+    def _check_context_flags(job: Job[Any], ctx: ExecutionContext) -> None:
+        """Fail before any task runs if a ContextFlag's key is not registered.
+
+        Nested workflows (``workflow_task``) are checked too, since they run
+        with the same context. Every flag is checked, including flags in
+        branches that may be skipped at run time.
+        """
+        missing: list[str] = []
+        Runner._collect_missing_context_keys(job.workflow, job.job_configuration, ctx, "", missing)
+        if missing:
+            raise ContextValueMissingError(
+                "Context value(s) not registered on the execution context: " + ", ".join(missing)
+            )
+
+    @staticmethod
+    def _collect_missing_context_keys(
+        workflow: Workflow,
+        job_configuration: JobConfiguration | None,
+        ctx: ExecutionContext,
+        prefix: str,
+        missing: list[str],
+    ) -> None:
+        from taskmaestro.conditions import ContextFlag
+
+        for name, task_cls in workflow.topological_order():
+            inner_workflow = getattr(task_cls, "_inner_workflow", None)
+            if isinstance(inner_workflow, Workflow):
+                Runner._collect_missing_context_keys(
+                    inner_workflow,
+                    getattr(task_cls, "_inner_job_configuration", None),
+                    ctx,
+                    f"{prefix}{name}.",
+                    missing,
+                )
+                continue
+            if not issubclass(task_cls, ContextFlag) or job_configuration is None:
+                continue
+            key = job_configuration.get_config_for_task(name).get("key")
+            if isinstance(key, str) and not ctx.has(key):
+                missing.append(f"'{key}' (task '{prefix}{name}')")
 
     @staticmethod
     def _skip_reason(

@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from taskmaestro import (
     Branch,
     ConditionTask,
+    ContextFlag,
     ExecutionContext,
     Job,
     JobConfiguration,
@@ -33,6 +34,7 @@ from taskmaestro import (
     when,
     workflow_task,
 )
+from taskmaestro.cli import main as cli_main
 from taskmaestro.definition import definition_from_workflow, load_definition, write_definition
 from taskmaestro.exceptions import ConfigLoadError
 from taskmaestro.hooks.base import BaseHook
@@ -679,3 +681,78 @@ def test_conditional_examples_run(example: str, mode: list[str]) -> None:
 
     assert "Status: completed" in completed.stdout
     assert "skipped" in completed.stdout
+
+
+# --- ContextFlag ---
+
+
+def _flag_workflow() -> Workflow:
+    builder = Workflow.builder("flag")
+    start = builder.task(AddOne)
+    dry = builder.task(ContextFlag, name="dry_run", config_fields=["key"])
+    yes = builder.task(Negate, depends_on=start, when=dry.if_true())
+    no = builder.task(Double, depends_on=start, when=dry.if_false())
+    builder.task(Join, picked=first_of(yes, no))
+    return builder.build()
+
+
+def _flag_job() -> Job[Any]:
+    return Job(
+        workflow=_flag_workflow(),
+        config=NumberInput(value=1),
+        job_configuration=JobConfiguration({"dry_run": {"key": "dry"}}),
+    )
+
+
+@pytest.mark.parametrize(("value", "result"), [(True, -2), ("", 4)])
+def test_context_flag_routes_on_context_value(value: Any, result: int) -> None:
+    ctx = ExecutionContext()
+    ctx.register("dry", value)
+
+    assert Runner().run(_flag_job(), ctx=ctx).result == NumberOutput(value=result)
+
+
+def test_context_flag_with_unregistered_key_fails_before_any_task() -> None:
+    recorder = SkipRecorder()
+    job = _flag_job()
+
+    with pytest.raises(ContextValueMissingError, match="'dry' \\(task 'dry_run'\\)"):
+        Runner(hooks=[recorder]).run(job, ctx=ExecutionContext())
+    assert job.status == JobStatus.PENDING
+    assert recorder.events == []
+
+
+def test_cli_reports_unregistered_context_flag_key(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "workflow.yaml").write_text(
+        """\
+workflow:
+  name: cli_flag
+  tasks:
+    - task: tests.conftest.AddOne
+      name: add_one
+      config_fields: [value]
+    - task: taskmaestro.ContextFlag
+      name: dry_run
+      config_fields: [key]
+    - task: tests.conftest.Double
+      name: double
+      depends_on: add_one
+      when: {switch: dry_run, case: false}
+    - task: tests.test_conditions.Negate
+      name: negate
+      depends_on: add_one
+      when: {switch: dry_run, case: true}
+    - task: tests.test_conditions.Join
+      name: join
+      depends_on:
+        picked:
+          first_of: [double, negate]
+"""
+    )
+    (tmp_path / "input.yaml").write_text("add_one: {value: 1}\ndry_run: {key: dry}\n")
+    args = ["run", str(tmp_path / "workflow.yaml"), "--input", str(tmp_path / "input.yaml")]
+
+    assert cli_main(args) == 2
+    assert "'dry' (task 'dry_run')" in capsys.readouterr().err

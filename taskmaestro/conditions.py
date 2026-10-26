@@ -132,6 +132,25 @@ class ConditionTask(SwitchTask[I, bool], Generic[I]):
         ...
 
 
+class ContextFlagInput(BaseModel):
+    """Configuration of a :class:`ContextFlag`: the context service key to read."""
+
+    key: str
+
+
+class ContextFlag(ConditionTask[ContextFlagInput]):
+    """Condition that is ``True`` when the context value under ``key`` is truthy.
+
+    Add it with ``config_fields=["key"]`` and set ``key`` in the job
+    configuration. ``Runner.run`` checks that every configured key is
+    registered on the execution context before any task runs, including
+    flags in nested workflows and in branches that may later be skipped.
+    """
+
+    def decide(self, input: ContextFlagInput, ctx: ExecutionContext) -> bool:
+        return bool(ctx.resolve(input.key))
+
+
 def is_switch_task(task_cls: type[Any]) -> bool:
     """Return whether *task_cls* is a concrete switch task."""
     return (

@@ -2,7 +2,15 @@
 
 __version__ = "0.4.0"
 
-from taskmaestro.conditions import Branch, Condition, ConditionTask, SwitchTask, when
+from taskmaestro.conditions import (
+    Branch,
+    Condition,
+    ConditionTask,
+    ContextFlag,
+    ContextFlagInput,
+    SwitchTask,
+    when,
+)
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import OutputHandle, TaskHandle, collect, first_of
 from taskmaestro.discovery import (
@@ -17,6 +25,7 @@ from taskmaestro.discovery import (
 )
 from taskmaestro.exceptions import (
     ConfigLoadError,
+    ContextValueMissingError,
     CycleDetectedError,
     DefinitionError,
     IncompleteInputError,
@@ -54,6 +63,9 @@ __all__ = [
     "Condition",
     "ConditionTask",
     "ConfigLoadError",
+    "ContextFlag",
+    "ContextFlagInput",
+    "ContextValueMissingError",
     "CycleDetectedError",
     "DefinitionError",
     "EmptyConfig",

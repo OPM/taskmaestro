@@ -465,6 +465,21 @@ builder.task(PrintLabel, parcel=parcel, shipment=first_of(express, freight, stan
   `.truthy()`, `.falsy()`.
 - `first_of(a, b, ...)` joins branches: the input gets the output of the first
   listed member that ran.
+- `ContextFlag` is a ready-made condition on the execution context: it is
+  `True` when the context value registered under its configured `key` is
+  truthy. `Runner.run` raises `ContextValueMissingError` (a
+  `WorkflowDefinitionError`) before any task runs if
+  a configured key is not registered. Flags in nested workflows
+  (`workflow_task`) and in branches that may be skipped are checked as well.
+  The `taskmaestro` CLI does not register
+  context values, so it reports such workflows as a configuration error.
+
+  ```python
+  dry = builder.task(ContextFlag, name="dry_run", config_fields=["key"])
+  builder.task(Deploy, depends_on=data, when=dry.if_false())
+  # job configuration: {"dry_run": {"key": "dry_run"}}
+  ctx.register("dry_run", True)
+  ```
 
 Validation happens at build time. Labels must belong to the switch's label
 type, so typos are caught. Every label needs a guarded task or an

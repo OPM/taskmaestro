@@ -18,7 +18,12 @@ from taskmaestro.discovery import (
     registered_task_names,
     registered_workflow_names,
 )
-from taskmaestro.exceptions import ConfigLoadError, PluginLoadError, WorkflowLookupError
+from taskmaestro.exceptions import (
+    ConfigLoadError,
+    ContextValueMissingError,
+    PluginLoadError,
+    WorkflowLookupError,
+)
 from taskmaestro.introspection import (
     TaskSchemaGenerator,
     dependency_spec,
@@ -301,6 +306,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     except PluginLoadError as exc:
         print(f"Plugin error: {exc}", file=sys.stderr)
+        return 2
+    except ContextValueMissingError as exc:
+        # Raised by Runner.run before any task starts. The message only names
+        # context keys and tasks, so it is safe to report.
+        if getattr(args, "json", False):
+            print(
+                json.dumps(
+                    {"status": "invalid", "error": _error("configuration_error", exc, str(exc))}
+                )
+            )
+        else:
+            print(f"Configuration error: {exc}", file=sys.stderr)
         return 2
 
 
