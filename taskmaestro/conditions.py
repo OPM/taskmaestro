@@ -58,13 +58,32 @@ def plain_label(value: Any) -> Any:
 
 
 def _resolve_label_type(cls: type[Any]) -> Any | None:
-    """Find the concrete ``L`` of ``SwitchTask[I, L]`` in *cls*'s bases."""
-    for base in cls.__mro__:
-        for orig_base in getattr(base, "__orig_bases__", ()):
-            if get_origin(orig_base) is SwitchTask:
-                args = get_args(orig_base)
-                if len(args) == 2 and not isinstance(args[1], TypeVar):
-                    return args[1]
+    """Find the concrete ``L`` of ``SwitchTask[I, L]`` in *cls*'s bases.
+
+    Type variables are substituted through intermediate generic subclasses,
+    so ``class Concrete(MySwitch[Literal["a", "b"]])`` resolves its labels
+    even when ``MySwitch`` itself is still generic in ``L``.
+    """
+    label = _label_from_bases(cls, {})
+    return None if isinstance(label, TypeVar) else label
+
+
+def _label_from_bases(cls: type[Any], substitutions: dict[Any, Any]) -> Any | None:
+    for base in cls.__dict__.get("__orig_bases__", cls.__bases__):
+        origin = get_origin(base) or base
+        if not (isinstance(origin, type) and issubclass(origin, SwitchTask)):
+            continue
+        args = tuple(
+            substitutions.get(arg, arg) if isinstance(arg, TypeVar) else arg
+            for arg in get_args(base)
+        )
+        if origin is SwitchTask:
+            label = args[1] if len(args) == 2 else None
+        else:
+            parameters = getattr(origin, "__parameters__", ())
+            label = _label_from_bases(origin, dict(zip(parameters, args, strict=False)))
+        if label is not None:
+            return label
     return None
 
 
