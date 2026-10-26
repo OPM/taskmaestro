@@ -481,6 +481,27 @@ builder.task(PrintLabel, parcel=parcel, shipment=first_of(express, freight, stan
   ctx.register("dry_run", True)
   ```
 
+- Ready-made conditions, registered as task plugins so they show up in
+  `taskmaestro tasks list` and workflow editors
+  (`taskmaestro.condition_tasks`):
+
+  | Task id                 | Class        | `True` when                                                    |
+  |-------------------------|--------------|----------------------------------------------------------------|
+  | `condition.compare`     | `Compare`    | `value <op> threshold`; `op` is one of `<`, `<=`, `==`, `!=`, `>=` (default), `>` |
+  | `condition.is_true`     | `IsTrue`     | `value` is truthy                                              |
+  | `condition.path_exists` | `PathExists` | `path` exists; `kind` may require a `file` or `directory`     |
+
+  ```yaml
+  - task: condition.compare
+    name: is_large
+    depends_on:
+      value: [pipeline.LoadOrder, amount]
+    config_fields: [op, threshold]
+  - task: pipeline.ManualReview
+    depends_on: pipeline.LoadOrder
+    when: {switch: is_large, case: true}
+  ```
+
 Validation happens at build time. Labels must belong to the switch's label
 type, so typos are caught. Every label needs a guarded task or an
 `otherwise()`. An `otherwise()` that can never match is an error. A switch with

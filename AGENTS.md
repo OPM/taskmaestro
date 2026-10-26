@@ -25,6 +25,7 @@ mypy taskmaestro               # type check (strict mode)
 | `taskmaestro/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
 | `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles (incl. guard sugar `on`/`otherwise`/`if_true`/`if_false`), output references, `collect()`, `first_of()`, mapped-task configuration |
 | `taskmaestro/conditions.py` | `SwitchTask[I, L]`/`ConditionTask[I]` (label in a `Branch` output), `Condition` (unresolved `when=`), `Guard` (resolved), `when()`, `ContextFlag` (condition on a context value; `Runner.run` checks configured keys are registered before running) |
+| `taskmaestro/condition_tasks.py` | Ready-made conditions registered as `condition.*` task entry points: `Compare`, `IsTrue`, `PathExists` |
 | `taskmaestro/workflow_task.py` | Nested workflows wrapped as tasks |
 | `taskmaestro/yaml_config.py` | YAML parsing, task imports, workflow and input validation; `load_registered_workflow` pairs an entry-point workflow with an input file |
 | `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`, `tasks list/describe`, `workflow list/describe`; workflow arguments accept a YAML path or a registered workflow name), plugin entry-point discovery (`load_registry` collects broken entry points instead of raising) |
