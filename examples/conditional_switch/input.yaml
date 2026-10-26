@@ -1,0 +1,8 @@
+# Per-task configuration. Parcels over 100 kg go by freight, priority parcels
+# by express, everything else by standard shipping.
+
+load_parcel:
+  parcel_id: P-42
+  weight_kg: 150
+  priority: false
+  destination: Bergen

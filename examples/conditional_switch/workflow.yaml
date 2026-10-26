@@ -1,0 +1,37 @@
+# Multi-way switch: ChooseShipping returns a label, the matching branch runs.
+# Run with: python examples/conditional_switch/pipeline.py --yaml
+
+workflow:
+  name: conditional_switch
+  tasks:
+    - task: pipeline.LoadParcel
+      config_fields: [parcel_id, weight_kg, priority, destination]
+
+    - task: pipeline.ChooseShipping
+      depends_on: pipeline.LoadParcel
+
+    - task: pipeline.ExpressShipping
+      depends_on: pipeline.LoadParcel
+      when: {switch: pipeline.ChooseShipping, case: express}
+
+    - task: pipeline.FreightShipping
+      depends_on: pipeline.LoadParcel
+      when: {switch: pipeline.ChooseShipping, case: freight}
+
+    # Runs for every label not claimed above: standard and economy.
+    - task: pipeline.StandardShipping
+      depends_on: pipeline.LoadParcel
+      when: {switch: pipeline.ChooseShipping, otherwise: true}
+
+    - task: pipeline.PrintLabel
+      depends_on:
+        parcel: pipeline.LoadParcel
+        shipment:
+          first_of:
+            - pipeline.ExpressShipping
+            - pipeline.FreightShipping
+            - pipeline.StandardShipping
+
+runner:
+  hooks:
+    - hook: taskmaestro.hooks.logging.LoggingHook

@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from typing import TYPE_CHECKING, Any, get_args, get_origin
 
-from taskmaestro.dependencies import CollectionRef, OutputRef
+from taskmaestro.conditions import BRANCH_FIELD, Guard, plain_label
+from taskmaestro.dependencies import CollectionRef, FirstOfRef, OutputRef
 from taskmaestro.task import get_input_type
 
 if TYPE_CHECKING:
@@ -62,6 +63,41 @@ def _output_ref_label(workflow: Workflow, task_by_name: dict[str, type], ref: Ou
     return _field_type_label(workflow, task_by_name, ref.task_name, ref.output_field)
 
 
+def _label_text(value: Any) -> str:
+    """Render a guard value for an edge label."""
+    value = plain_label(value)
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value).replace('"', "'").replace("|", "/")
+
+
+def _guard_label(workflow: Workflow, guard: Guard) -> str:
+    """Return the label of a dashed control edge for a guard."""
+    switch_case = (
+        workflow.is_switch(guard.ref.task_name) and guard.ref.output_field == BRANCH_FIELD
+    )
+    if switch_case:
+        if guard.op == "otherwise":
+            return "otherwise"
+        if guard.op == "in":
+            return " / ".join(_label_text(value) for value in guard.values)
+    field = f".{guard.ref.output_field}"
+    if guard.op == "truthy":
+        return field if not switch_case else "true"
+    if guard.op == "falsy":
+        return f"not {field}" if not switch_case else "false"
+    if len(guard.values) == 1:
+        return f"{field} = {_label_text(guard.values[0])}"
+    return f"{field} in {' / '.join(_label_text(value) for value in guard.values)}"
+
+
+def _node_line(workflow: Workflow, task_name: str, node_id: str, label: str) -> str:
+    """Return a node definition; switch tasks are drawn as diamonds."""
+    if workflow.is_switch(task_name):
+        return f'{node_id}{{"{label}"}}'
+    return f'{node_id}["{label}"]'
+
+
 def _apply_redirect(name: str, redirect: dict[str, str]) -> str:
     """Replace *name* with its redirect target if one exists."""
     return redirect.get(name, name)
@@ -101,7 +137,20 @@ def _emit_edges(
             lines.append(f"{indent}{upstream_src} -->|{label}| {tgt_name}")
         elif isinstance(deps, dict):
             for down_field, upstream_ref in sorted(deps.items()):
-                if isinstance(upstream_ref, CollectionRef):
+                if isinstance(upstream_ref, FirstOfRef):
+                    first_node = f"_first_of_{tgt_name}_{down_field}_"
+                    lines.append(f'{indent}{first_node}(["first_of {down_field}"])')
+                    for ref in upstream_ref.members:
+                        upstream_src = _apply_redirect(ref.task_name, source_redirect)
+                        label = _output_ref_label(workflow, task_by_name, ref)
+                        lines.append(f"{indent}{upstream_src} -->|{label}| {first_node}")
+                    input_model = get_input_type(task_cls)
+                    annotation = input_model.model_fields[down_field].annotation
+                    field_type = _safe_type_name(annotation, task_cls)
+                    lines.append(
+                        f"{indent}{first_node} -->|{down_field}: {field_type}| {tgt_name}"
+                    )
+                elif isinstance(upstream_ref, CollectionRef):
                     collection_node = f"_collect_{tgt_name}_{down_field}_"
                     lines.append(f'{indent}{collection_node}{{{{"collect {down_field}"}}}}')
                     if upstream_ref.kind == "positional":
@@ -140,6 +189,11 @@ def _emit_edges(
                         f"{indent}{upstream_src} -->|{down_field}: {output_name}| {tgt_name}"
                     )
 
+        guard = workflow.get_guard(task_name)
+        if guard is not None:
+            guard_src = _apply_redirect(guard.ref.task_name, source_redirect)
+            lines.append(f"{indent}{guard_src} -.->|{_guard_label(workflow, guard)}| {tgt_name}")
+
 
 def to_mermaid(
     workflow: Workflow,
@@ -157,19 +211,14 @@ def to_mermaid(
     Tasks created via ``workflow_task`` are expanded into Mermaid subgraphs
     showing the inner workflow's structure.
     """
-    from taskmaestro.workflow import _extract_upstream_names
-
     lines: list[str] = ["---", f"title: {workflow.name}", "---", "graph TD"]
 
     tasks = workflow.topological_order()
     task_by_name: dict[str, type] = {name: cls for name, cls in tasks}
 
-    # Find sink tasks (no downstream dependents)
-    has_dependents: set[str] = set()
-    for task_name, _task_cls in tasks:
-        deps = workflow.get_dependencies(task_name)
-        has_dependents.update(_extract_upstream_names(deps))
-    sinks = [(name, cls) for name, cls in tasks if name not in has_dependents]
+    # Find sink tasks (no downstream data or condition dependents)
+    sink_names = set(workflow._find_sinks())
+    sinks = [(name, cls) for name, cls in tasks if name in sink_names]
 
     # Collect tasks with config_fields
     configured_tasks = {
@@ -224,7 +273,7 @@ def to_mermaid(
             # Inner node definitions
             for iname, _icls in inner_tasks:
                 prefixed = f"{task_name}__{iname}"
-                lines.append(f'        {prefixed}["{iname}"]')
+                lines.append(f"        {_node_line(inner_wf, iname, prefixed, iname)}")
 
             # Inner edges (skip start/end — handled by outer redirects)
             inner_source_redirect: dict[str, str] = {
@@ -252,7 +301,7 @@ def to_mermaid(
             label = (
                 f"{task_name}<br/>map over: {task_map.over}" if task_map is not None else task_name
             )
-            lines.append(f'    {task_name}["{label}"]')
+            lines.append(f"    {_node_line(workflow, task_name, task_name, label)}")
 
     # Outer edge definitions
     _emit_edges(

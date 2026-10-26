@@ -56,6 +56,10 @@ class TaskTimeoutError(TaskExecutionError):
     """Raised when a task exceeds its timeout_seconds."""
 
 
+class ResultTaskSkippedError(TaskExecutionError):
+    """The workflow's result task was skipped by conditional execution."""
+
+
 class WorkflowTaskError(TaskExecutionError):
     """An inner workflow wrapped by ``workflow_task`` failed.
 

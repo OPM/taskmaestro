@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Generic, Literal, TypeVar, overload
+from typing import TYPE_CHECKING, Any, Generic, Literal, TypeVar, overload
 
 from pydantic import BaseModel
 
 from taskmaestro.exceptions import WorkflowDefinitionError
 from taskmaestro.task import Task
+
+if TYPE_CHECKING:
+    from taskmaestro.conditions import Condition
 
 O = TypeVar("O", bound=BaseModel)
 T = TypeVar("T")
@@ -24,6 +27,30 @@ class OutputHandle(Generic[T]):
     annotation: Any
     _owner: object = field(repr=False)
 
+    def equals(self, value: Any) -> Condition:
+        """Guard: run the task when this field equals *value*."""
+        from taskmaestro.conditions import when
+
+        return when(self, equals=value)
+
+    def is_in(self, *values: Any) -> Condition:
+        """Guard: run the task when this field equals one of *values*."""
+        from taskmaestro.conditions import when
+
+        return when(self, in_=values)
+
+    def truthy(self) -> Condition:
+        """Guard: run the task when this field is ``True`` (or, if not a bool, not ``None``)."""
+        from taskmaestro.conditions import when
+
+        return when(self, truthy=True)
+
+    def falsy(self) -> Condition:
+        """Guard: run the task when this field is ``False`` or ``None``."""
+        from taskmaestro.conditions import when
+
+        return when(self, truthy=False)
+
 
 @dataclass(frozen=True)
 class TaskHandle(Generic[O]):
@@ -32,6 +59,28 @@ class TaskHandle(Generic[O]):
     name: str
     output_type: type[BaseModel]
     _owner: object = field(repr=False)
+
+    def on(self, *labels: Any) -> Condition:
+        """Guard: run the task when this switch selects one of *labels*."""
+        from taskmaestro.conditions import Condition
+
+        if not labels:
+            raise TypeError("on() needs at least one branch label")
+        return Condition(self, "in", labels)
+
+    def otherwise(self) -> Condition:
+        """Guard: run the task when this switch selects a label no other guard claims."""
+        from taskmaestro.conditions import Condition
+
+        return Condition(self, "otherwise")
+
+    def if_true(self) -> Condition:
+        """Guard: run the task when this condition task returns ``True``."""
+        return self.on(True)
+
+    def if_false(self) -> Condition:
+        """Guard: run the task when this condition task returns ``False``."""
+        return self.on(False)
 
     def field(self, name: str) -> OutputHandle[Any]:
         """Return a validated reference to a named output field."""
@@ -129,3 +178,34 @@ def collect(
         "positional",
         positional_members=tuple(members),  # type: ignore[arg-type]
     )
+
+
+@dataclass(frozen=True)
+class FirstOfDependency:
+    """Unresolved alternative dependency declared through :func:`first_of`."""
+
+    members: tuple[OutputReference, ...]
+
+
+@dataclass(frozen=True)
+class FirstOfRef:
+    """An alternative dependency whose task references have been resolved."""
+
+    members: tuple[OutputRef, ...]
+
+    def output_refs(self) -> tuple[OutputRef, ...]:
+        """Return all output references in declaration order."""
+        return self.members
+
+
+def first_of(*members: OutputReference) -> FirstOfDependency:
+    """Take one input field from whichever of several conditional branches ran.
+
+    At runtime the field receives the output of the first member, in
+    declaration order, that was not skipped. If every member was skipped the
+    downstream task is skipped too. Members may be task classes, task handles,
+    registered names, output handles, or ``(task, output_field)`` references.
+    """
+    if len(members) < 2:
+        raise TypeError("first_of() needs at least two members")
+    return FirstOfDependency(tuple(members))

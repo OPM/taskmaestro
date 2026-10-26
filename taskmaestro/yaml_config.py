@@ -14,8 +14,15 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from taskmaestro.conditions import Condition, when
 from taskmaestro.context import ExecutionContext
-from taskmaestro.dependencies import CollectionDependency, OutputReference, collect
+from taskmaestro.dependencies import (
+    CollectionDependency,
+    FirstOfDependency,
+    OutputReference,
+    collect,
+    first_of,
+)
 from taskmaestro.discovery import (
     get_registered_task,
     get_registered_workflow,
@@ -47,6 +54,54 @@ class TaskMapConfig(BaseModel):
     error_mode: typing.Literal["fail_fast", "collect_all"] = "fail_fast"
 
 
+class WhenConfig(BaseModel):
+    """The ``when:`` condition of a YAML task entry.
+
+    Either a switch case, ``{switch: route, case: express}`` (``case`` may be a
+    list) or ``{switch: route, otherwise: true}``, or a condition on an output
+    field: ``{ref: [task, field], equals: value}`` with ``in: [...]`` or
+    ``truthy: true|false`` instead of ``equals``.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    switch: str | None = None
+    case: Any = None
+    otherwise: bool = False
+    ref: str | list[str] | None = None
+    equals: Any = None
+    in_: list[Any] | None = Field(default=None, alias="in")
+    truthy: bool | None = None
+
+    @model_validator(mode="after")
+    def _check_form(self) -> WhenConfig:
+        given = self.model_fields_set
+        field_ops = given & {"equals", "in_", "truthy"}
+        if self.switch is not None:
+            if self.ref is not None or field_ops:
+                raise ValueError("'when' with 'switch' accepts only 'case' or 'otherwise'")
+            if ("case" in given) == self.otherwise:
+                raise ValueError("'when' with 'switch' needs either 'case' or 'otherwise: true'")
+            if "case" in given and (self.case is None or self.case == []):
+                raise ValueError("'when' 'case' needs at least one branch label")
+            return self
+        if self.ref is not None:
+            if given & {"case", "otherwise"}:
+                raise ValueError("'when' with 'ref' does not accept 'case' or 'otherwise'")
+            if len(field_ops) != 1:
+                raise ValueError("'when' with 'ref' needs exactly one of 'equals', 'in', 'truthy'")
+            if "truthy" in given and self.truthy is None:
+                raise ValueError("'when' 'truthy' must be true or false")
+            if "in_" in given and not self.in_:
+                raise ValueError("'when' 'in' needs at least one value")
+            if isinstance(self.ref, list) and (
+                len(self.ref) != 2 or not all(isinstance(item, str) for item in self.ref)
+            ):
+                raise ValueError("'when' 'ref' must be a task name or [task, field]")
+            return self
+        raise ValueError("'when' needs either 'switch' or 'ref'")
+
+
 class TaskConfig(BaseModel):
     """A single task entry in the YAML workflow config."""
 
@@ -57,6 +112,7 @@ class TaskConfig(BaseModel):
     depends_on: str | list[str] | dict[str, Any] | None = None
     config_fields: list[str] | None = None
     map: TaskMapConfig | None = None
+    when: WhenConfig | None = None
 
     @model_validator(mode="after")
     def _check_task_or_workflow(self) -> TaskConfig:
@@ -436,9 +492,46 @@ def _load_workflow_only(
             f"'collect' must contain a list or mapping for task '{context_task}'"
         )
 
-    # 6. Detect linear vs DAG mode
+    def _resolve_yaml_alternatives(raw_members: Any, context_task: str) -> FirstOfDependency:
+        """Resolve a YAML first_of list."""
+        if not isinstance(raw_members, list) or len(raw_members) < 2:
+            raise ConfigLoadError(
+                f"'first_of' must contain a list of at least two members for task '{context_task}'"
+            )
+        return first_of(
+            *(_resolve_yaml_output_ref(member, context_task) for member in raw_members)
+        )
+
+    def _resolve_yaml_condition(raw: WhenConfig | None, context_task: str) -> Condition | None:
+        """Resolve a YAML ``when:`` entry to a condition."""
+        if raw is None:
+            return None
+        if raw.switch is not None:
+            source = _resolve_yaml_dep(raw.switch, context_task, what="Condition switch")
+            if raw.otherwise:
+                return Condition(source, "otherwise")
+            cases = raw.case if isinstance(raw.case, list) else [raw.case]
+            return Condition(source, "in", tuple(cases))
+        assert raw.ref is not None
+        ref: OutputReference
+        if isinstance(raw.ref, list):
+            ref = (_resolve_yaml_dep(raw.ref[0], context_task, what="Condition"), raw.ref[1])
+        else:
+            ref = _resolve_yaml_dep(raw.ref, context_task, what="Condition")
+        given = raw.model_fields_set
+        if "equals" in given:
+            return when(ref, equals=raw.equals)
+        if "in_" in given:
+            assert raw.in_  # checked by WhenConfig
+            return when(ref, in_=raw.in_)
+        assert raw.truthy is not None  # checked by WhenConfig
+        return when(ref, truthy=raw.truthy)
+
+    # 6. Detect linear vs DAG mode. Conditions refer to other tasks, so a
+    #    workflow with a 'when' entry is a DAG as well.
     has_depends_on = any(
-        tc.depends_on is not None or tc.map is not None for tc in config.workflow.tasks
+        tc.depends_on is not None or tc.map is not None or tc.when is not None
+        for tc in config.workflow.tasks
     )
 
     # 6b. Input YAML always uses per-task configuration. Top-level keys are
@@ -485,12 +578,14 @@ def _load_workflow_only(
         previous_registered = registered_name
 
         try:
+            condition = _resolve_yaml_condition(task_config.when, key)
             if deps is None:
                 builder.add_task(
                     cls,
                     name=instance_name,
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
+                    when=condition,
                 )
             elif isinstance(deps, _LinearDep):
                 builder.add_task(
@@ -499,6 +594,7 @@ def _load_workflow_only(
                     depends_on=deps.upstream,
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
+                    when=condition,
                 )
             elif isinstance(deps, str):
                 resolved_dep = _resolve_yaml_dep(deps, key)
@@ -508,6 +604,7 @@ def _load_workflow_only(
                     depends_on=resolved_dep,
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
+                    when=condition,
                 )
             elif isinstance(deps, list):
                 if len(deps) != 2 or not all(isinstance(e, str) for e in deps):
@@ -523,6 +620,7 @@ def _load_workflow_only(
                     depends_on=(resolved_dep, field_name),
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
+                    when=condition,
                 )
             elif isinstance(deps, dict):
                 fan_in: dict[
@@ -530,11 +628,16 @@ def _load_workflow_only(
                     type[Task[Any, Any]]
                     | str
                     | tuple[type[Task[Any, Any]] | str, str]
-                    | CollectionDependency,
+                    | CollectionDependency
+                    | FirstOfDependency,
                 ] = {}
                 for field_name, upstream_ref in deps.items():
                     if isinstance(upstream_ref, dict) and set(upstream_ref) == {"collect"}:
                         fan_in[field_name] = _resolve_yaml_collection(upstream_ref["collect"], key)
+                    elif isinstance(upstream_ref, dict) and set(upstream_ref) == {"first_of"}:
+                        fan_in[field_name] = _resolve_yaml_alternatives(
+                            upstream_ref["first_of"], key
+                        )
                     elif isinstance(upstream_ref, list):
                         if len(upstream_ref) != 2 or not all(
                             isinstance(e, str) for e in upstream_ref
@@ -561,6 +664,7 @@ def _load_workflow_only(
                     depends_on=fan_in,
                     config_fields=cfg_fields,
                     mapped_over=mapped_over,
+                    when=condition,
                 )
         except WorkflowDefinitionError as exc:
             raise ConfigLoadError(f"Workflow validation failed: {exc}") from exc

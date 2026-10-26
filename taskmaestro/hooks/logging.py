@@ -43,6 +43,9 @@ class LoggingHook(BaseHook):
     def on_task_fail(self, job: Job[Any], task: Task[Any, Any], error: Exception) -> None:
         self._logger.log(self._level, "Task failed: %s, error=%s", task.name, error)
 
+    def on_task_skip(self, job: Job[Any], task_name: str, reason: str) -> None:
+        self._logger.log(self._level, "Task skipped: %s, reason=%s", task_name, reason)
+
     def on_map_item_start(self, job: Job[Any], task: Task[Any, Any], key: str) -> None:
         self._logger.log(self._level, "Map item started: %s[%s]", task.name, key)
 
