@@ -37,6 +37,10 @@ class ExecutionContext:
         """Register a service by key."""
         self._registry[key] = service
 
+    def has(self, key: str) -> bool:
+        """Return whether a service is registered under *key*."""
+        return key in self._registry
+
     def resolve(self, key: str) -> Any:
         """Retrieve a registered service. Raises KeyError if not found."""
         return self._registry[key]
