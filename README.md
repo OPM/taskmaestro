@@ -423,6 +423,89 @@ with `MappedOutput(root={})`. Per-item records are available in
 built-in logging, timing, and persistence hooks observe individual items.
 Concurrent mapped execution is intentionally deferred.
 
+## Conditional Branches
+
+A workflow can choose between branches at run time. A *switch task* returns a
+branch label; downstream tasks are guarded with `when=` and run only when their
+guard matches. Tasks whose guard does not match are **skipped**, not failed.
+
+```python
+from typing import Literal
+
+from taskmaestro import ConditionTask, SwitchTask, Workflow, first_of
+
+
+class ChooseShipping(SwitchTask[Parcel, Literal["express", "freight", "standard"]]):
+    def decide(self, input: Parcel, ctx: ExecutionContext) -> Literal["express", "freight", "standard"]:
+        return "freight" if input.weight_kg > 100 else "standard"
+
+
+builder = Workflow.builder("shipping")
+parcel = builder.task(LoadParcel)
+method = builder.task(ChooseShipping, depends_on=parcel)
+express = builder.task(ExpressShipping, depends_on=parcel, when=method.on("express"))
+freight = builder.task(FreightShipping, depends_on=parcel, when=method.on("freight"))
+standard = builder.task(StandardShipping, depends_on=parcel, when=method.otherwise())
+builder.task(PrintLabel, parcel=parcel, shipment=first_of(express, freight, standard))
+```
+
+- `SwitchTask[I, L]`: implement `decide()` and return a label of type `L`, a
+  `Literal[...]` or an `Enum`. The task output is a `Branch` model with a
+  `branch` field.
+- `ConditionTask[I]` is a switch with the labels `True`/`False`; guard with
+  `handle.if_true()` and `handle.if_false()`.
+- `handle.on(*labels)` runs a task for any of the labels. `handle.otherwise()`
+  runs it for every label that no `on()` guard claims.
+- Any output field can be a guard too: `when(handle.field("kind"), equals=...)`,
+  `in_=[...]` or `truthy=True|False` (truthy/falsy needs a `bool` or optional
+  field; a non-bool value counts as truthy when it is not `None`, so `0` or `""`
+  still count as set). Guard values are validated strictly against the field
+  type: `"no"` or `1` is not accepted for a `bool` field, while the string value
+  of an enum member is. Shorthands: `handle.field("kind").equals(...)`, `.is_in(...)`,
+  `.truthy()`, `.falsy()`.
+- `first_of(a, b, ...)` joins branches: the input gets the output of the first
+  listed member that ran.
+
+Validation happens at build time. Labels must belong to the switch's label
+type, so typos are caught. Every label needs a guarded task or an
+`otherwise()`. An `otherwise()` that can never match is an error. A switch with
+no guarded tasks is an ordinary task.
+
+At run time:
+
+- A task is skipped when its guard does not match, when the guard's source was
+  skipped, when any plain dependency was skipped, or when every `first_of`
+  member was skipped. Skips propagate downstream.
+- `collect()` leaves out skipped members.
+- Skipped tasks get a `TaskResult` with `status=TaskStatus.SKIPPED` and a
+  `skip_reason`, and are listed in `job.skipped_tasks`. Hooks receive
+  `on_task_skip(job, task_name, reason)`; `on_task_start` is not called for
+  them.
+- If the result task is skipped, the job fails with `ResultTaskSkippedError`.
+
+In YAML:
+
+```yaml
+- task: pipeline.ExpressShipping
+  depends_on: pipeline.LoadParcel
+  when: {switch: pipeline.ChooseShipping, case: express}       # case may be a list
+- task: pipeline.StandardShipping
+  depends_on: pipeline.LoadParcel
+  when: {switch: pipeline.ChooseShipping, otherwise: true}
+- task: pipeline.Audit
+  depends_on: pipeline.LoadParcel
+  when: {ref: [pipeline.LoadParcel, priority], truthy: true}   # or equals: / in: [...]
+- task: pipeline.PrintLabel
+  depends_on:
+    parcel: pipeline.LoadParcel
+    shipment:
+      first_of: [pipeline.ExpressShipping, pipeline.StandardShipping]
+```
+
+In Mermaid diagrams, switch tasks are diamonds and guards are dashed edges
+labeled with their case (`express`, `otherwise`, `true`, `.kind = a`, ...).
+`first_of` joins are drawn as rounded nodes.
+
 ## ObjectModel
 
 `ObjectModel[T]` wraps arbitrary (non-Pydantic) objects so they can flow through workflows. Use it as a type alias for simple wrappers, or subclass it to add extra fields:
@@ -616,7 +699,7 @@ graph TD
     build_report -->|AnalysisReport| _end_
 ```
 
-Edges are labeled with data types. Fan-in edges show field names, and field routing edges show `.field: Type`. When a `JobConfiguration` is provided, configured tasks get dashed edges from a `JobConfiguration` node.
+Edges are labeled with data types. Fan-in edges show field names, and field routing edges show `.field: Type`. When a `JobConfiguration` is provided, configured tasks get dashed edges from a `JobConfiguration` node. Switch tasks are drawn as diamonds with dashed, labeled guard edges (see [Conditional Branches](#conditional-branches)).
 
 ## Error Handling
 
@@ -630,6 +713,7 @@ WorkflowRunnerError (base)
 │   └── WorkflowLookupError       # Unknown or broken registered workflow name
 └── TaskExecutionError            # Runtime task failure
     ├── MappedTaskExecutionError  # One or more mapped items failed
+    ├── ResultTaskSkippedError    # The result task was skipped by a condition
     ├── TaskOutputTypeError       # Output type mismatch
     └── TaskTimeoutError          # Task exceeded timeout
 ```
@@ -738,7 +822,7 @@ prints indented JSON.
 
 ## Examples
 
-Four full example pipelines are included in the `examples/` directory:
+Six full example pipelines are included in the `examples/` directory:
 
 | Example | Features |
 |---|---|
@@ -746,6 +830,8 @@ Four full example pipelines are included in the `examples/` directory:
 | `examples/resinsight/` | `ObjectModel[T]` for gRPC objects, `JobConfiguration` with per-task config, named task instances, `config_fields`, YAML config |
 | `examples/image_processing/` | Nested workflows through `Workflow.as_task()` and YAML `workflow:`, typed boundaries, expanded Mermaid subgraph |
 | `examples/release_pipeline/` | Keyed `collect()` dependencies, mapped tasks, mapped output routing, per-task YAML config |
+| `examples/conditional_if/` | If/else with `ConditionTask`, `if_true()`/`if_false()` guards, `first_of` join, YAML `when:` |
+| `examples/conditional_switch/` | Multi-way `SwitchTask` with `on(...)` and `otherwise()`, `first_of` join, YAML `when:` |
 
 Run an example:
 

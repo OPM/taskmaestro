@@ -1,0 +1,29 @@
+# If/else branch: IsLargeOrder decides, exactly one review task runs.
+# Run with: python examples/conditional_if/pipeline.py --yaml
+
+workflow:
+  name: conditional_if
+  tasks:
+    - task: pipeline.LoadOrder
+      config_fields: [order_id, customer, amount]
+
+    - task: pipeline.IsLargeOrder
+      depends_on: pipeline.LoadOrder
+
+    - task: pipeline.ManualReview
+      depends_on: pipeline.LoadOrder
+      when: {switch: pipeline.IsLargeOrder, case: true}
+
+    - task: pipeline.AutoApprove
+      depends_on: pipeline.LoadOrder
+      when: {switch: pipeline.IsLargeOrder, case: false}
+
+    - task: pipeline.Finalize
+      depends_on:
+        order: pipeline.LoadOrder
+        decision:
+          first_of: [pipeline.ManualReview, pipeline.AutoApprove]
+
+runner:
+  hooks:
+    - hook: taskmaestro.hooks.logging.LoggingHook

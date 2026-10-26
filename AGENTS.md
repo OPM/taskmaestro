@@ -23,7 +23,8 @@ mypy taskmaestro               # type check (strict mode)
 | `taskmaestro/context.py` | `ExecutionContext` with correlation ID, logger, scratch dir, service registry |
 | `taskmaestro/task.py` | `Task[I, O]` ABC, type introspection (`get_input_type`, `get_output_type`) |
 | `taskmaestro/workflow.py` | `Workflow` (linear + DAG), `WorkflowBuilder`, validation (cycles, types, fan-in) |
-| `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles, output references, `collect()`, mapped-task configuration |
+| `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles (incl. guard sugar `on`/`otherwise`/`if_true`/`if_false`), output references, `collect()`, `first_of()`, mapped-task configuration |
+| `taskmaestro/conditions.py` | `SwitchTask[I, L]`/`ConditionTask[I]` (label in a `Branch` output), `Condition` (unresolved `when=`), `Guard` (resolved), `when()` |
 | `taskmaestro/workflow_task.py` | Nested workflows wrapped as tasks |
 | `taskmaestro/yaml_config.py` | YAML parsing, task imports, workflow and input validation; `load_registered_workflow` pairs an entry-point workflow with an input file |
 | `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`, `tasks list/describe`, `workflow list/describe`; workflow arguments accept a YAML path or a registered workflow name), plugin entry-point discovery (`load_registry` collects broken entry points instead of raising) |
@@ -43,7 +44,8 @@ mypy taskmaestro               # type check (strict mode)
 - **Timeouts**: `signal.setitimer`/`SIGALRM` (Unix only, main thread); gracefully warns if unavailable. All armed timeouts go through the process-wide `_AlarmScheduler`, which always arms the nearest expiry, so nested runs (`workflow_task`) cannot cancel or extend an enclosing run's timeouts
 - **Hook error swallowing**: `_emit()` wraps each hook call in try/except, reports via `warnings.warn(..., HookError, source=exc)` — message includes `repr(exc)`; `HookError` subclasses `UserWarning` so it can be filtered or escalated
 - **Inner-workflow failures**: `workflow_task` raises `WorkflowTaskError` (a `TaskExecutionError`) carrying `inner_job` and chaining the original exception via `__cause__`; `Job.exception` keeps the raw exception alongside `Job.error`
-- **Validation order**: unique names → acyclic (DFS) → type chain → result task detection
+- **Conditional branches**: a `when=` guard is a control edge (ordering + predicate, no data); guard sources count as upstreams for topo order, cycles and sinks. A task that is not run gets `TaskStatus.SKIPPED` + `skip_reason` and `on_task_skip(job, task_name, reason)` (no `task_start`). Skips propagate through plain deps; `collect()` drops skipped members; `first_of` takes the first member that ran; a skipped result task fails the job with `ResultTaskSkippedError`. Every switch label needs an `on()` or `otherwise()`
+- **Validation order**: unique names → references → acyclic (DFS) → task maps → guards (incl. switch label coverage) → type chain (incl. `first_of`) → result task detection
 
 ## Testing Conventions
 

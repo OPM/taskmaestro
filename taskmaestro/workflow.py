@@ -5,18 +5,29 @@ from __future__ import annotations
 import types
 import typing
 from collections.abc import Mapping
+from datetime import date
+from pathlib import PurePath
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, get_args, get_origin
 
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
 if TYPE_CHECKING:
     from taskmaestro.context import ExecutionContext
     from taskmaestro.hooks.base import BaseHook
     from taskmaestro.job import Job, JobConfiguration
 
+from taskmaestro.conditions import (
+    BRANCH_FIELD,
+    Condition,
+    Guard,
+    is_switch_task,
+    plain_label,
+)
 from taskmaestro.dependencies import (
     CollectionDependency,
     CollectionRef,
+    FirstOfDependency,
+    FirstOfRef,
     OutputHandle,
     OutputRef,
     OutputReference,
@@ -37,9 +48,10 @@ O = TypeVar("O", bound=BaseModel)
 #   None              — root task
 #   str               — single upstream (whole output)
 #   tuple[str, str]   — single upstream, specific field
-#   dict[str, str | tuple[str, str]]  — fan-in (values may be field refs)
+#   dict[str, str | tuple[str, str]]  — fan-in (values may be field refs,
+#                                       collections or first_of alternatives)
 type DepValue = str | tuple[str, str]
-type FanInValue = DepValue | CollectionRef
+type FanInValue = DepValue | CollectionRef | FirstOfRef
 type StoredDeps = dict[str, FanInValue] | str | tuple[str, str] | None
 
 
@@ -53,7 +65,7 @@ def _extract_upstream_names(deps: StoredDeps) -> set[str]:
         return {deps[0]}
     names: set[str] = set()
     for value in deps.values():
-        if isinstance(value, CollectionRef):
+        if isinstance(value, CollectionRef | FirstOfRef):
             names.update(ref.task_name for ref in value.output_refs())
         elif isinstance(value, tuple):
             names.add(value[0])
@@ -139,6 +151,25 @@ def _type_name(annotation: Any) -> str:
     return getattr(annotation, "__name__", str(annotation))
 
 
+_MISSING_VALUE: Any = object()
+
+
+def _accepts_truthiness(annotation: Any) -> bool:
+    """Return whether a field may be guarded with truthy/falsy conditions.
+
+    Only ``bool``, ``Literal`` booleans and optional fields qualify. For
+    non-bool values the guard tests ``is not None`` (see ``Guard.matches``),
+    so it never depends on Python's truthiness of arbitrary values.
+    """
+    if annotation is None or annotation is Any or annotation is bool:
+        return True
+    if get_origin(annotation) is Literal:
+        return all(isinstance(arg, bool) for arg in get_args(annotation))
+    if _is_union(annotation):
+        return type(None) in get_args(annotation)
+    return False
+
+
 class Workflow:
     """A DAG of tasks. Linear pipelines are a special case."""
 
@@ -158,6 +189,7 @@ class Workflow:
         self._dependencies: dict[str, StoredDeps] = {}
         self._config_fields: dict[str, set[str]] = {}
         self._task_maps: dict[str, TaskMap] = {}
+        self._guards: dict[str, Guard] = {}
         self._result_task_name: str | None = None
 
         if tasks is not None:
@@ -224,8 +256,8 @@ class Workflow:
         in_degree: dict[str, int] = {name: 0 for name in self._tasks}
         adjacency: dict[str, list[str]] = {name: [] for name in self._tasks}
 
-        for name, deps in self._dependencies.items():
-            for upstream in _extract_upstream_names(deps):
+        for name in self._dependencies:
+            for upstream in self._upstream_names(name):
                 in_degree[name] += 1
                 adjacency[upstream].append(name)
 
@@ -260,6 +292,26 @@ class Workflow:
     def get_dependencies(self, task_name: str) -> StoredDeps:
         """Return the dependency spec for a task."""
         return self._dependencies[task_name]
+
+    def get_guard(self, task_name: str) -> Guard | None:
+        """Return the guard (``when=``) of a task, or ``None`` if it always runs."""
+        return self._guards.get(task_name)
+
+    def is_conditional(self, task_name: str) -> bool:
+        """Return whether a task has a guard."""
+        return task_name in self._guards
+
+    def is_switch(self, task_name: str) -> bool:
+        """Return whether a task is a switch task selecting between branches."""
+        return is_switch_task(self._tasks[task_name])
+
+    def _upstream_names(self, task_name: str) -> set[str]:
+        """Return the data upstreams of a task plus the source of its guard."""
+        names = _extract_upstream_names(self._dependencies[task_name])
+        guard = self._guards.get(task_name)
+        if guard is not None:
+            names.add(guard.ref.task_name)
+        return names
 
     def get_config_fields(self, task_name: str) -> set[str]:
         """Return the set of config field names for a task, or empty set."""
@@ -298,6 +350,7 @@ class Workflow:
         self._validate_references()
         self._validate_acyclic()
         self._validate_task_maps()
+        self._validate_guards()
         self._validate_types()
         self._validate_result_task()
 
@@ -319,6 +372,12 @@ class Workflow:
                         f"Task '{name}' depends on '{upstream}', "
                         f"which is not registered in the workflow"
                     )
+        for name, guard in self._guards.items():
+            if guard.ref.task_name not in self._tasks:
+                raise WorkflowDefinitionError(
+                    f"Condition of task '{name}' refers to '{guard.ref.task_name}', "
+                    f"which is not registered in the workflow"
+                )
 
     def _validate_acyclic(self) -> None:
         """Detect cycles via DFS. Raise CycleDetectedError."""
@@ -327,8 +386,8 @@ class Workflow:
 
         def _build_adjacency() -> dict[str, list[str]]:
             adj: dict[str, list[str]] = {name: [] for name in self._tasks}
-            for name, deps in self._dependencies.items():
-                for upstream in _extract_upstream_names(deps):
+            for name in self._dependencies:
+                for upstream in self._upstream_names(name):
                     adj[upstream].append(name)
             return adj
 
@@ -533,6 +592,14 @@ class Workflow:
                             upstream_ref,
                         )
                         continue
+                    if isinstance(upstream_ref, FirstOfRef):
+                        if field_name in cf:
+                            raise WorkflowDefinitionError(
+                                f"Field '{field_name}' on task '{name}' is supplied by both "
+                                "a first_of dependency and config_fields"
+                            )
+                        self._validate_first_of(name, field_name, field_annotation, upstream_ref)
+                        continue
                     if isinstance(upstream_ref, tuple):
                         up_name, up_field = upstream_ref
                         up_output = self.get_output_annotation(up_name)
@@ -640,6 +707,164 @@ class Workflow:
                     f"{_type_name(expected_type)}"
                 )
 
+    def _validate_first_of(
+        self,
+        task_name: str,
+        field_name: str,
+        field_annotation: Any,
+        alternatives: FirstOfRef,
+    ) -> None:
+        """Validate that every first_of member can fill the destination field."""
+        for ref in alternatives.members:
+            produced_type = self._resolve_output_ref_type(ref)
+            if (
+                field_annotation is not None
+                and produced_type is not None
+                and not _is_type_compatible(produced_type, field_annotation)
+            ):
+                source = ref.task_name
+                if ref.output_field is not None:
+                    source += f".{ref.output_field}"
+                raise WorkflowDefinitionError(
+                    f"first_of type mismatch for '{task_name}.{field_name}': '{source}' "
+                    f"produces {_type_name(produced_type)}, but the field expects "
+                    f"{_type_name(field_annotation)}"
+                )
+
+    def _validate_guards(self) -> None:
+        """Validate guard sources and values, and switch branch coverage.
+
+        Resolves a whole-output reference to a switch into its ``branch``
+        field, normalizes guard values to the field's type (e.g. strings to
+        enum members), and fills in the labels matched by ``otherwise()``.
+        """
+        for name, guard in list(self._guards.items()):
+            source = guard.ref.task_name
+            source_cls = self._tasks[source]
+            if self.is_mapped_task(source):
+                raise WorkflowDefinitionError(
+                    f"Condition of task '{name}' cannot refer to mapped task '{source}'",
+                    task_name=name,
+                )
+            switch = self.is_switch(source)
+            field_name = guard.ref.output_field
+            if field_name is None:
+                if not switch:
+                    raise WorkflowDefinitionError(
+                        f"Condition of task '{name}' must refer to an output field of "
+                        f"'{source}', which is not a switch task",
+                        task_name=name,
+                    )
+                field_name = BRANCH_FIELD
+            output_type = get_output_type(source_cls)
+            if field_name not in output_type.model_fields:
+                raise WorkflowDefinitionError(
+                    f"Field '{field_name}' not found on {output_type.__name__} "
+                    f"(output of {source}, used by the condition of '{name}')",
+                    task_name=name,
+                )
+            annotation = output_type.model_fields[field_name].annotation
+            is_branch = switch and field_name == BRANCH_FIELD
+            values = guard.values
+            if guard.op == "otherwise" and not is_branch:
+                raise WorkflowDefinitionError(
+                    f"otherwise() on task '{name}' requires a switch task, but "
+                    f"'{source}' is not one",
+                    task_name=name,
+                )
+            if guard.op == "in":
+                values = tuple(
+                    self._guard_value(name, source, field_name, annotation, value)
+                    for value in values
+                )
+            elif guard.op in ("truthy", "falsy") and not _accepts_truthiness(annotation):
+                raise WorkflowDefinitionError(
+                    f"truthy/falsy condition of task '{name}' requires a bool or optional "
+                    f"field, but {source}.{field_name} is {_type_name(annotation)}",
+                    task_name=name,
+                )
+            self._guards[name] = Guard(OutputRef(source, field_name), guard.op, values)
+
+        consumers: dict[str, list[str]] = {}
+        for name, guard in self._guards.items():
+            source = guard.ref.task_name
+            if self.is_switch(source) and guard.ref.output_field == BRANCH_FIELD:
+                consumers.setdefault(source, []).append(name)
+        for switch_name, guarded in consumers.items():
+            self._validate_switch_coverage(switch_name, guarded)
+
+    def _validate_switch_coverage(self, switch_name: str, guarded: list[str]) -> None:
+        """Every label of a switch needs a case; ``otherwise()`` must be reachable."""
+        labels: tuple[Any, ...] = self._tasks[switch_name].branches  # type: ignore[attr-defined]
+        claimed: list[Any] = []
+        has_otherwise = False
+        for name in guarded:
+            guard = self._guards[name]
+            if guard.op == "otherwise":
+                has_otherwise = True
+            elif guard.op == "in":
+                claimed.extend(guard.values)
+            else:
+                claimed.extend(label for label in labels if bool(label) == (guard.op == "truthy"))
+        unclaimed = tuple(label for label in labels if label not in claimed)
+        readable = [plain_label(label) for label in unclaimed]
+        if not has_otherwise:
+            if unclaimed:
+                raise WorkflowDefinitionError(
+                    f"Switch '{switch_name}' has no task for branch(es) {readable}; "
+                    "guard a task with on(...) or otherwise()",
+                    task_name=switch_name,
+                )
+            return
+        if not unclaimed:
+            raise WorkflowDefinitionError(
+                f"otherwise() on switch '{switch_name}' can never match: every branch "
+                "already has a case",
+                task_name=switch_name,
+            )
+        for name in guarded:
+            guard = self._guards[name]
+            if guard.op == "otherwise":
+                self._guards[name] = Guard(guard.ref, "otherwise", unclaimed)
+
+    @staticmethod
+    def _guard_value(
+        task_name: str, source: str, field_name: str, annotation: Any, value: Any
+    ) -> Any:
+        """Validate a guard value against the source field's annotation.
+
+        Values are validated strictly, so ``"no"`` or ``1`` never silently become
+        ``False``/``True``. A lax conversion is only accepted when it keeps the
+        plain value, e.g. the YAML string ``"express"`` for an enum member.
+        Dates and paths also accept their canonical string representation, so
+        guards survive a JSON definition round trip without numeric or boolean
+        coercion.
+        """
+        if annotation is None or annotation is Any:
+            return value
+        adapter: TypeAdapter[Any] = TypeAdapter(annotation)
+        try:
+            return adapter.validate_python(value, strict=True)
+        except ValidationError:
+            pass
+        try:
+            converted = adapter.validate_python(value)
+        except ValidationError:
+            converted = _MISSING_VALUE
+        plain = plain_label(converted)
+        if isinstance(value, str):
+            if isinstance(plain, date):  # Includes datetime; mirrors JSON serialization.
+                plain = plain.isoformat()
+            elif isinstance(plain, PurePath):
+                plain = str(plain)
+        if converted is not _MISSING_VALUE and type(plain) is type(value) and plain == value:
+            return converted
+        raise WorkflowDefinitionError(
+            f"Condition value {plain_label(value)!r} of task '{task_name}' is not a "
+            f"valid value of {source}.{field_name} ({_type_name(annotation)})",
+            task_name=task_name,
+        )
+
     def _validate_result_task(self) -> None:
         """Ensure result_task is set and registered. Default to sole sink; raise if ambiguous."""
         if self._result_task_name is not None:
@@ -683,8 +908,8 @@ class Workflow:
     def _find_sinks(self) -> list[str]:
         """Return task names with no downstream dependents."""
         has_dependents: set[str] = set()
-        for deps in self._dependencies.values():
-            has_dependents.update(_extract_upstream_names(deps))
+        for name in self._dependencies:
+            has_dependents.update(self._upstream_names(name))
         return [name for name in self._tasks if name not in has_dependents]
 
 
@@ -703,6 +928,7 @@ class WorkflowBuilder:
         self._workflow._dependencies = {}
         self._workflow._config_fields = {}
         self._workflow._task_maps = {}
+        self._workflow._guards = {}
         self._workflow._result_task_name = None
         # Store the raw result_task ref for resolution at build() time
         self._result_task_ref: type[Task[Any, Any]] | str | TaskHandle[Any] | None = result_task
@@ -782,10 +1008,13 @@ class WorkflowBuilder:
         *,
         name: str | None = None,
         depends_on: (
-            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
+            OutputReference
+            | Mapping[str, OutputReference | CollectionDependency | FirstOfDependency]
+            | None
         ) = None,
         config_fields: list[str] | None = None,
         mapped_over: TaskMap | None = None,
+        when: Condition | None = None,
     ) -> WorkflowBuilder:
         """Add a task to the DAG. Returns self for chaining.
 
@@ -800,13 +1029,28 @@ class WorkflowBuilder:
         - ``{"field": task_reference, ...}`` — fan-in, whole outputs
         - ``{"field": output_reference, ...}`` — fan-in with field routing
         - ``{"field": collect(...), ...}`` — collect outputs into a list or dictionary
+        - ``{"field": first_of(a, b), ...}`` — take whichever conditional branch ran
 
         ``mapped_over`` expands this logical task over a configured mapping.
+
+        ``when`` makes the task conditional, e.g. ``switch.on("label")``,
+        ``switch.otherwise()``, ``condition.if_true()`` or
+        ``when(handle.field("flag"), truthy=True)``. A task whose condition
+        does not hold, or whose required upstream was skipped, is skipped.
         """
         wf = self._workflow
         task_name = name if name is not None else task_cls.name
         if task_name in wf._tasks:
             raise WorkflowDefinitionError(f"Duplicate task name '{task_name}'")
+        if isinstance(depends_on, FirstOfDependency):
+            raise WorkflowDefinitionError(
+                f"first_of() for task '{task_name}' must be assigned to a named input field"
+            )
+        if when is not None and not isinstance(when, Condition):
+            raise WorkflowDefinitionError(
+                f"when= for task '{task_name}' must be a condition such as "
+                "switch.on(...) or when(...)"
+            )
         wf._tasks[task_name] = task_cls
 
         if depends_on is None:
@@ -826,6 +1070,10 @@ class WorkflowBuilder:
             for field, dep in depends_on.items():
                 if isinstance(dep, CollectionDependency):
                     resolved_dependencies[field] = self._resolve_collection(dep)
+                elif isinstance(dep, FirstOfDependency):
+                    resolved_dependencies[field] = FirstOfRef(
+                        tuple(self._resolve_output_reference(member) for member in dep.members)
+                    )
                 elif isinstance(dep, OutputHandle):
                     output_ref = self._resolve_output_reference(dep)
                     resolved_dependencies[field] = (
@@ -847,6 +1095,10 @@ class WorkflowBuilder:
             wf._config_fields[task_name] = set(config_fields)
         if mapped_over is not None:
             wf._task_maps[task_name] = mapped_over
+        if when is not None:
+            wf._guards[task_name] = Guard(
+                self._resolve_output_reference(when.source), when.op, when.values
+            )
 
         return self
 
@@ -856,11 +1108,14 @@ class WorkflowBuilder:
         *,
         name: str | None = None,
         depends_on: (
-            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
+            OutputReference
+            | Mapping[str, OutputReference | CollectionDependency | FirstOfDependency]
+            | None
         ) = None,
         config_fields: list[str] | None = None,
         mapped_over: TaskMap | None = None,
-        **input_dependencies: OutputReference | CollectionDependency,
+        when: Condition | None = None,
+        **input_dependencies: OutputReference | CollectionDependency | FirstOfDependency,
     ) -> TaskHandle[O]:
         """Add a task and return an unambiguous handle to that instance.
 
@@ -869,6 +1124,11 @@ class WorkflowBuilder:
         dependencies may be passed directly as keyword arguments instead of
         through ``depends_on``.
         """
+        if when is not None and not isinstance(when, Condition):
+            # Before conditional execution existed, ``when=`` was an ordinary
+            # keyword input dependency for a field named "when".
+            input_dependencies = {**input_dependencies, "when": when}
+            when = None
         if input_dependencies:
             if depends_on is not None:
                 raise WorkflowDefinitionError(
@@ -881,6 +1141,7 @@ class WorkflowBuilder:
             depends_on=depends_on,
             config_fields=config_fields,
             mapped_over=mapped_over,
+            when=when,
         )
         task_name = name if name is not None else task_cls.name
         output_type = cast(type[BaseModel], self._workflow.get_output_annotation(task_name))
@@ -896,10 +1157,13 @@ class WorkflowBuilder:
         error_mode: Literal["fail_fast", "collect_all"] = "fail_fast",
         name: str | None = None,
         depends_on: (
-            OutputReference | Mapping[str, OutputReference | CollectionDependency] | None
+            OutputReference
+            | Mapping[str, OutputReference | CollectionDependency | FirstOfDependency]
+            | None
         ) = None,
         config_fields: list[str] | None = None,
-        **input_dependencies: OutputReference | CollectionDependency,
+        when: Condition | None = None,
+        **input_dependencies: OutputReference | CollectionDependency | FirstOfDependency,
     ) -> TaskHandle[MappedOutput[O]]:
         """Add a task mapped over configured items and return its handle."""
         handle = self.task(
@@ -913,6 +1177,7 @@ class WorkflowBuilder:
                 value_as=value_as,
                 error_mode=error_mode,
             ),
+            when=when,
             **input_dependencies,
         )
         return cast(TaskHandle[MappedOutput[O]], handle)
@@ -942,6 +1207,7 @@ class WorkflowBuilder:
             name: set(fields) for name, fields in source._config_fields.items()
         }
         workflow._task_maps = dict(source._task_maps)
+        workflow._guards = dict(source._guards)
         ref = self._result_task_ref
         workflow._result_task_name = self._resolve_dep_ref(ref) if ref is not None else None
         workflow._validate()

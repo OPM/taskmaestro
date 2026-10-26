@@ -29,6 +29,7 @@ class TaskStatus(StrEnum):
 
     COMPLETED = "completed"
     FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 @dataclass
@@ -41,6 +42,7 @@ class TaskResult:
     started_at: datetime
     duration_seconds: float
     error: str | None = None
+    skip_reason: str | None = None
 
 
 class EmptyConfig(BaseModel):
@@ -105,6 +107,13 @@ class Job(Generic[C]):
         self._validate_task_maps()
         self._validate_task_configuration()
         self._validate_root_task_inputs(config)
+
+    @property
+    def skipped_tasks(self) -> list[str]:
+        """Names of tasks skipped by conditional execution, in execution order."""
+        return [
+            result.task_name for result in self.task_results if result.status == TaskStatus.SKIPPED
+        ]
 
     def _validate_task_configuration(self) -> None:
         """Ensure every declared configuration field has a supplied value.

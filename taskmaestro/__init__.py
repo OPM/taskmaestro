@@ -2,8 +2,9 @@
 
 __version__ = "0.4.0"
 
+from taskmaestro.conditions import Branch, Condition, ConditionTask, SwitchTask, when
 from taskmaestro.context import ExecutionContext
-from taskmaestro.dependencies import OutputHandle, TaskHandle, collect
+from taskmaestro.dependencies import OutputHandle, TaskHandle, collect, first_of
 from taskmaestro.discovery import (
     TASK_ENTRY_POINT_GROUP,
     WORKFLOW_ENTRY_POINT_GROUP,
@@ -22,6 +23,7 @@ from taskmaestro.exceptions import (
     JobStateError,
     MappedTaskExecutionError,
     PluginLoadError,
+    ResultTaskSkippedError,
     TaskExecutionError,
     TaskOutputTypeError,
     TaskTimeoutError,
@@ -48,6 +50,9 @@ from taskmaestro.yaml_config import (
 __all__ = [
     "TASK_ENTRY_POINT_GROUP",
     "WORKFLOW_ENTRY_POINT_GROUP",
+    "Branch",
+    "Condition",
+    "ConditionTask",
     "ConfigLoadError",
     "CycleDetectedError",
     "DefinitionError",
@@ -65,7 +70,9 @@ __all__ = [
     "ObjectModel",
     "OutputHandle",
     "PluginLoadError",
+    "ResultTaskSkippedError",
     "Runner",
+    "SwitchTask",
     "Task",
     "TaskExecutionError",
     "TaskHandle",
@@ -81,6 +88,7 @@ __all__ = [
     "WorkflowRunnerError",
     "WorkflowTaskError",
     "collect",
+    "first_of",
     "get_registered_task",
     "get_registered_workflow",
     "load_registered_workflow",
@@ -91,5 +99,6 @@ __all__ = [
     "registered_workflows",
     "run_workflow_from_yaml",
     "to_mermaid",
+    "when",
     "workflow_task",
 ]

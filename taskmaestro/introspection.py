@@ -23,7 +23,8 @@ from pydantic.errors import PydanticInvalidForJsonSchema, PydanticSchemaGenerati
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
 from pydantic_core import core_schema
 
-from taskmaestro.dependencies import CollectionRef, OutputRef
+from taskmaestro.conditions import Guard, plain_label
+from taskmaestro.dependencies import CollectionRef, FirstOfRef, OutputRef
 from taskmaestro.exceptions import ConfigLoadError, WorkflowDefinitionError
 from taskmaestro.job import EmptyConfig, Job, JobConfiguration
 from taskmaestro.task import get_input_type, get_output_type
@@ -126,11 +127,31 @@ def dependency_spec(deps: Any) -> Any:
             else:
                 members = [_output_ref(item) for item in ref.positional_members]
             result[field] = {"collect": {"kind": ref.kind, "members": members}}
+        elif isinstance(ref, FirstOfRef):
+            result[field] = {"first_of": [_output_ref(item) for item in ref.members]}
         elif isinstance(ref, tuple):
             result[field] = {"task": ref[0], "field": ref[1]}
         else:
             result[field] = {"task": ref, "field": None}
     return result
+
+
+def guard_spec(guard: Guard | None) -> dict[str, Any] | None:
+    """Render a task's guard: source task and field, operator and values.
+
+    For ``otherwise`` guards ``values`` lists the labels the guard matches.
+    """
+    if guard is None:
+        return None
+    return {
+        "task": guard.ref.task_name,
+        "field": guard.ref.output_field,
+        "op": guard.op,
+        "values": [
+            jsonable(plain_label(value), f"{guard.ref.task_name}.{guard.ref.output_field}")
+            for value in guard.values
+        ],
+    }
 
 
 def _jsonable_key(key: object, path: str) -> str:
@@ -359,6 +380,12 @@ def describe_workflow(
                     field for field, info in input_type.model_fields.items() if info.is_required()
                 ),
                 "map": asdict(task_map) if task_map is not None else None,
+                "when": guard_spec(workflow.get_guard(name)),
+                "branches": (
+                    [plain_label(label) for label in task.branches]  # type: ignore[attr-defined]
+                    if workflow.is_switch(name)
+                    else None
+                ),
                 "input_schema": model_json_schema(input_type, schema_generator),
                 "output_schema": model_json_schema(output_type, schema_generator),
             }

@@ -1,0 +1,7 @@
+# Per-task configuration. Amounts of 10000 or more take the manual-review
+# branch; lower amounts are approved automatically.
+
+load_order:
+  order_id: A-1001
+  customer: Acme
+  amount: 25000

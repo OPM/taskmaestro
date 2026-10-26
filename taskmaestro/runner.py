@@ -15,10 +15,11 @@ from typing import Any
 from pydantic import BaseModel
 
 from taskmaestro.context import ExecutionContext
-from taskmaestro.dependencies import CollectionRef, OutputRef
+from taskmaestro.dependencies import CollectionRef, FirstOfRef, OutputRef
 from taskmaestro.exceptions import (
     JobStateError,
     MappedTaskExecutionError,
+    ResultTaskSkippedError,
     TaskOutputTypeError,
     TaskTimeoutError,
 )
@@ -26,6 +27,24 @@ from taskmaestro.hooks.base import BaseHook, Event
 from taskmaestro.job import Job, JobStatus, TaskResult, TaskStatus
 from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.task import Task, get_input_type, get_output_type
+from taskmaestro.workflow import Workflow
+
+
+def _required_upstreams(deps: Any) -> set[str]:
+    """Return upstreams whose output a task needs; collections and first_of are optional."""
+    if deps is None:
+        return set()
+    if isinstance(deps, str):
+        return {deps}
+    if isinstance(deps, tuple):
+        return {deps[0]}
+    names: set[str] = set()
+    for ref in deps.values():
+        if isinstance(ref, tuple):
+            names.add(ref[0])
+        elif isinstance(ref, str):
+            names.add(ref)
+    return names
 
 
 class _JobTimeoutError(TaskTimeoutError):
@@ -189,11 +208,29 @@ class Runner:
             deadline.job_deadline = time.monotonic() + timeout_seconds
 
         outputs: dict[str, BaseModel] = {}
+        skip_reasons: dict[str, str] = {}
         job_config = job.job_configuration
 
         try:
             for task_name, task_cls in workflow.topological_order():
                 deps = workflow.get_dependencies(task_name)
+                # Tasks run in topological order and the job stops at the first
+                # failure, so an upstream without an output was skipped.
+                skip_reason = self._skip_reason(workflow, task_name, deps, outputs)
+                if skip_reason is not None:
+                    skip_reasons[task_name] = skip_reason
+                    job.task_results.append(
+                        TaskResult(
+                            task_name=task_name,
+                            status=TaskStatus.SKIPPED,
+                            output=None,
+                            started_at=datetime.now(),
+                            duration_seconds=0.0,
+                            skip_reason=skip_reason,
+                        )
+                    )
+                    self._emit(Event.TASK_SKIP, job, task_name, skip_reason)
+                    continue
                 config_fields = workflow.get_config_fields(task_name)
                 task_map = workflow.get_task_map(task_name)
                 all_config_values = (
@@ -292,11 +329,57 @@ class Runner:
             # Safety net; each unit of work already disarms right after running.
             self._disarm(deadline)
 
+        result_task_name = workflow.result_task_name
+        if result_task_name in skip_reasons:
+            skipped_error = ResultTaskSkippedError(
+                f"Result task '{result_task_name}' was skipped: {skip_reasons[result_task_name]}"
+            )
+            job.status = JobStatus.FAILED
+            job.error = str(skipped_error)
+            job.exception = skipped_error
+            job.failed_task = result_task_name
+            job.completed_at = datetime.now()
+            self._emit(Event.JOB_FAIL, job)
+            return job
+
         job.status = JobStatus.COMPLETED
-        job.result = outputs[workflow.result_task_name]
+        job.result = outputs[result_task_name]
         job.completed_at = datetime.now()
         self._emit(Event.JOB_COMPLETE, job)
         return job
+
+    @staticmethod
+    def _skip_reason(
+        workflow: Workflow,
+        task_name: str,
+        deps: Any,
+        outputs: dict[str, BaseModel],
+    ) -> str | None:
+        """Return why a task must be skipped, or ``None`` if it runs.
+
+        A task is skipped when a required (non-collected, non-alternative)
+        upstream or its guard source was skipped, when its guard does not hold,
+        or when every alternative of a ``first_of`` input was skipped.
+        """
+        for upstream in _required_upstreams(deps):
+            if upstream not in outputs:
+                return f"upstream task '{upstream}' was skipped"
+        guard = workflow.get_guard(task_name)
+        if guard is not None:
+            source = guard.ref.task_name
+            if source not in outputs:
+                return f"condition source '{source}' was skipped"
+            assert guard.ref.output_field is not None  # resolved during validation
+            value = getattr(outputs[source], guard.ref.output_field)
+            if not guard.matches(value):
+                return f"condition '{guard.describe()}' did not hold (value {value!r})"
+        if isinstance(deps, dict):
+            for field_name, ref in deps.items():
+                if isinstance(ref, FirstOfRef) and not any(
+                    member.task_name in outputs for member in ref.members
+                ):
+                    return f"every first_of alternative for input '{field_name}' was skipped"
+        return None
 
     @staticmethod
     def _build_task_input(
@@ -342,6 +425,9 @@ class Runner:
         for field_name, ref in deps.items():
             if isinstance(ref, CollectionRef):
                 values[field_name] = Runner._resolve_collection(ref, outputs)
+            elif isinstance(ref, FirstOfRef):
+                chosen = next(member for member in ref.members if member.task_name in outputs)
+                values[field_name] = Runner._resolve_output_ref(chosen, outputs)
             elif isinstance(ref, tuple):
                 upstream_name, output_field = ref
                 values[field_name] = getattr(outputs[upstream_name], output_field)
@@ -458,13 +544,20 @@ class Runner:
         collection: CollectionRef,
         outputs: dict[str, BaseModel],
     ) -> object:
-        """Resolve a collection while preserving its declaration order."""
+        """Resolve a collection while preserving its declaration order.
+
+        Members whose task was skipped are left out.
+        """
         if collection.kind == "positional":
             return [
-                Runner._resolve_output_ref(ref, outputs) for ref in collection.positional_members
+                Runner._resolve_output_ref(ref, outputs)
+                for ref in collection.positional_members
+                if ref.task_name in outputs
             ]
         return {
-            key: Runner._resolve_output_ref(ref, outputs) for key, ref in collection.keyed_members
+            key: Runner._resolve_output_ref(ref, outputs)
+            for key, ref in collection.keyed_members
+            if ref.task_name in outputs
         }
 
     def _arm(self, task_timeout: float | None, label: str, deadline: _Deadline) -> None:

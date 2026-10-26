@@ -232,7 +232,9 @@ def _field_reference(raw: Any, task: str, field: str | None) -> tuple[str, str |
 def _load_edges(definition: dict[str, Any], config: Any, candidates: dict[str, set[str]]) -> None:
     entries = config.workflow.tasks
     nodes = definition["nodes"]
-    linear = all(entry.depends_on is None and entry.map is None for entry in entries)
+    linear = all(
+        entry.depends_on is None and entry.map is None and entry.when is None for entry in entries
+    )
     if linear:
         for previous, node in pairwise(nodes):
             definition["edges"].append(_edge(previous["name"], None, node["name"], None))
@@ -245,6 +247,8 @@ def _load_edges(definition: dict[str, Any], config: Any, candidates: dict[str, s
 
     for entry, node in zip(entries, nodes, strict=True):
         name = node["name"]
+        if entry.when is not None:
+            node["when"] = _load_when(entry.when, candidates, name)
         deps = entry.depends_on
         if deps is None:
             continue
@@ -253,6 +257,9 @@ def _load_edges(definition: dict[str, Any], config: Any, candidates: dict[str, s
                 if isinstance(raw, dict) and set(raw) == {"collect"}:
                     _load_collect(definition, candidates, raw["collect"], name, field)
                     continue
+                if isinstance(raw, dict) and set(raw) == {"first_of"}:
+                    _load_first_of(definition, candidates, raw["first_of"], name, field)
+                    continue
                 ref, output = _field_reference(raw, name, field)
                 upstream = _resolve_reference(candidates, ref, name)
                 definition["edges"].append(_edge(upstream, output, name, field))
@@ -260,6 +267,41 @@ def _load_edges(definition: dict[str, Any], config: Any, candidates: dict[str, s
         ref, output = _field_reference(deps, name, None)
         upstream = _resolve_reference(candidates, ref, name)
         definition["edges"].append(_edge(upstream, output, name, None))
+
+
+def _load_when(when: Any, candidates: dict[str, set[str]], name: str) -> dict[str, Any]:
+    """Return a node's ``when`` in YAML form, with task references resolved."""
+    document = _jsonable(when.model_dump(by_alias=True, exclude_unset=True), name)
+    if "switch" in document:
+        document["switch"] = _resolve_reference(candidates, document["switch"], name)
+    else:
+        ref = document["ref"]
+        if isinstance(ref, list):
+            document["ref"] = [_resolve_reference(candidates, ref[0], name), ref[1]]
+        else:
+            document["ref"] = _resolve_reference(candidates, ref, name)
+    return dict(document)
+
+
+def _load_first_of(
+    definition: dict[str, Any],
+    candidates: dict[str, set[str]],
+    members: Any,
+    name: str,
+    field: str,
+) -> None:
+    if not isinstance(members, list):
+        raise DefinitionError(
+            f"'first_of' for field '{field}' on task '{name}' must be a list",
+            task=name,
+            field=field,
+        )
+    for member in members:
+        ref, output = _field_reference(member, name, field)
+        upstream = _resolve_reference(candidates, ref, name)
+        definition["edges"].append(
+            _edge(upstream, output, name, field, collect="first_of", key=None)
+        )
 
 
 def _load_collect(
@@ -435,7 +477,7 @@ def definition_from_workflow(
 
     ``class_ids`` maps registered task classes to their entry-point names.
     """
-    from taskmaestro.dependencies import CollectionRef
+    from taskmaestro.dependencies import CollectionRef, FirstOfRef
 
     definition = _empty_definition(workflow.name)
     definition["source"]["registered_id"] = registered_id
@@ -463,6 +505,10 @@ def definition_from_workflow(
         task_map = workflow.get_task_map(name)
         if task_map is not None:
             node["map"] = _map_json(task_map)
+        guard = workflow.get_guard(name)
+        if guard is not None:
+            node["when"] = _guard_document(workflow, guard)
+            has_dependents.add(guard.ref.task_name)
         definition["nodes"].append(node)
         definition["inputs"][name] = {}
 
@@ -493,6 +539,18 @@ def definition_from_workflow(
                                 key=key,
                             )
                         )
+                elif isinstance(ref, FirstOfRef):
+                    for member in ref.members:
+                        definition["edges"].append(
+                            _edge(
+                                member.task_name,
+                                member.output_field,
+                                name,
+                                field,
+                                collect="first_of",
+                                key=None,
+                            )
+                        )
                 elif isinstance(ref, tuple):
                     definition["edges"].append(_edge(ref[0], ref[1], name, field))
                 else:
@@ -512,6 +570,30 @@ def definition_from_workflow(
                 "message": str(exc),
             }
     return definition
+
+
+def _guard_document(workflow: Any, guard: Any) -> dict[str, Any]:
+    """Return the YAML form of a resolved guard."""
+    from taskmaestro.conditions import BRANCH_FIELD, plain_label
+
+    source = guard.ref.task_name
+    values = [
+        _jsonable(plain_label(value), f"{source}.{guard.ref.output_field}")
+        for value in guard.values
+    ]
+    if workflow.is_switch(source) and guard.ref.output_field == BRANCH_FIELD:
+        if guard.op == "otherwise":
+            return {"switch": source, "otherwise": True}
+        if guard.op == "in":
+            return {"switch": source, "case": values[0] if len(values) == 1 else values}
+    document: dict[str, Any] = {"ref": [source, guard.ref.output_field]}
+    if guard.op in ("truthy", "falsy"):
+        document["truthy"] = guard.op == "truthy"
+    elif len(values) == 1:
+        document["equals"] = values[0]
+    else:
+        document["in"] = values
+    return document
 
 
 # --- Saving YAML ---
@@ -571,6 +653,27 @@ def _check_saveable(definition: dict[str, Any]) -> None:
         for end in ("from", "to"):
             if edge.get(end) not in names:
                 raise DefinitionError(f"Connection refers to unknown task '{edge.get(end)}'")
+    for node in nodes:
+        when = node.get("when")
+        if when is None:
+            continue
+        if not isinstance(when, dict):
+            raise DefinitionError(
+                f"Invalid condition for task '{node['name']}'", task=node["name"]
+            )
+        source = when.get("switch", when.get("ref"))
+        if not source:
+            raise DefinitionError(
+                f"Condition of task '{node['name']}' needs 'switch' or 'ref'",
+                task=node["name"],
+            )
+        if isinstance(source, list) and source:
+            source = source[0]
+        if source not in names:
+            raise DefinitionError(
+                f"Condition of task '{node['name']}' refers to unknown task '{source}'",
+                task=node["name"],
+            )
     result_task = definition.get("result_task")
     if result_task is not None and result_task not in names:
         raise DefinitionError(f"Unknown result task '{result_task}'")
@@ -613,6 +716,9 @@ def _dependencies(definition: dict[str, Any], node_name: str) -> Any:
 def _add_collect_member(deps: dict[str, Any], edge: dict[str, Any], node_name: str) -> None:
     field = edge["input"]
     kind = edge["collect"]
+    if kind == "first_of":
+        _add_first_of_member(deps, edge, node_name)
+        return
     if kind not in ("list", "dict"):
         raise DefinitionError(
             f"Unknown collect kind '{kind}' for input '{node_name}.{field}'",
@@ -652,6 +758,19 @@ def _add_collect_member(deps: dict[str, Any], edge: dict[str, Any], node_name: s
     members[key] = reference
 
 
+def _add_first_of_member(deps: dict[str, Any], edge: dict[str, Any], node_name: str) -> None:
+    field = edge["input"]
+    existing = deps.setdefault(field, {"first_of": []})
+    found = existing.get("first_of") if isinstance(existing, dict) else None
+    if not isinstance(found, list):
+        raise DefinitionError(
+            f"Input '{node_name}.{field}' mixes first_of alternatives with other connections",
+            task=node_name,
+            field=field,
+        )
+    found.append(_reference(edge["from"], edge.get("output")))
+
+
 def _map_document(task_map: Any, node_name: str) -> dict[str, Any]:
     if not isinstance(task_map, dict):
         raise DefinitionError(f"Invalid map for task '{node_name}'", task=node_name)
@@ -680,6 +799,17 @@ def _map_document(task_map: Any, node_name: str) -> dict[str, Any]:
     return document
 
 
+def _when_document(when: dict[str, Any]) -> dict[str, Any]:
+    document = dict(when)
+    if isinstance(document.get("ref"), list):
+        document["ref"] = _FlowList(document["ref"])
+    if isinstance(document.get("case"), list):
+        document["case"] = _FlowList(document["case"])
+    if isinstance(document.get("in"), list):
+        document["in"] = _FlowList(document["in"])
+    return document
+
+
 def workflow_document(definition: dict[str, Any]) -> dict[str, Any]:
     """Build the ``workflow.yaml`` document for a definition."""
     _check_saveable(definition)
@@ -698,6 +828,8 @@ def workflow_document(definition: dict[str, Any]) -> dict[str, Any]:
             entry["config_fields"] = _FlowList(node["config_fields"])
         if node.get("map"):
             entry["map"] = _map_document(node["map"], node["name"])
+        if node.get("when"):
+            entry["when"] = _when_document(node["when"])
         tasks.append(entry)
 
     section: dict[str, Any] = {"name": definition["name"]}
