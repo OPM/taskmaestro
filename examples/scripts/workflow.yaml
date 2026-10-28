@@ -1,0 +1,25 @@
+# Script and command tasks: no Task classes needed. Their settings (script,
+# args, command, env, ...) are ordinary input fields, given in input.yaml.
+# Run from the repository root (relative paths resolve against the current directory):
+#   taskmaestro run examples/scripts/workflow.yaml --input examples/scripts/input.yaml
+
+workflow:
+  name: script_tasks
+  tasks:
+    # Python file run in a subprocess.
+    - task: taskmaestro.python
+      name: word_count
+
+    # Executable with arguments (list form: no shell, no quoting issues).
+    - task: taskmaestro.command
+      name: count_bytes
+
+    # Shell script (string form: runs through the shell). Upstream data
+    # arrives as one JSON object in $TASKMAESTRO_INPUT.
+    - task: taskmaestro.command
+      name: save_report
+      depends_on:
+        inputs:
+          collect:
+            counts: [word_count, result]
+            wc_output: [count_bytes, stdout]

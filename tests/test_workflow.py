@@ -1051,6 +1051,12 @@ class TestConfigFields:
                 .build()
             )
 
+    def test_root_task_misspelled_config_field_is_reported_before_missing_ones(self) -> None:
+        with pytest.raises(WorkflowDefinitionError, match="Config field 'cuont'"):
+            Workflow.builder("bad").add_task(
+                ConfigOnlyTask, config_fields=["path", "cuont"]
+            ).build()
+
     def test_single_dep_with_config_fields(self) -> None:
         """Single dep + config_fields: upstream fields + config cover all required."""
         wf = (

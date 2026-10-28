@@ -35,6 +35,8 @@ taskmaestro = "taskmaestro.cli:main"
 "condition.compare" = "taskmaestro.condition_tasks:Compare"
 "condition.is_true" = "taskmaestro.condition_tasks:IsTrue"
 "condition.path_exists" = "taskmaestro.condition_tasks:PathExists"
+"taskmaestro.command" = "taskmaestro.scripts:Command"
+"taskmaestro.python" = "taskmaestro.scripts:PythonScript"
 
 [project.urls]
 Homepage = "https://github.com/OPM/taskmaestro"

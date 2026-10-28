@@ -465,6 +465,14 @@ class Workflow:
                 if cf:
                     downstream_input = get_input_type(task_cls)
                     model_fields = downstream_input.model_fields
+                    # Unknown names first: a misspelled field also leaves the
+                    # intended one uncovered, and the typo is the real error.
+                    for field_name in cf:
+                        if field_name not in model_fields:
+                            raise WorkflowDefinitionError(
+                                f"Config field '{field_name}' not found on "
+                                f"{downstream_input.__name__} (input of '{name}')"
+                            )
                     # Validate config_fields cover all required input fields
                     task_map = self.get_task_map(name)
                     map_fields = (
@@ -476,13 +484,6 @@ class Workflow:
                                 f"Required field '{field_name}' on "
                                 f"{downstream_input.__name__} is not covered by "
                                 f"config_fields for root task '{name}'"
-                            )
-                    # Validate config field names exist on the model
-                    for field_name in cf:
-                        if field_name not in model_fields:
-                            raise WorkflowDefinitionError(
-                                f"Config field '{field_name}' not found on "
-                                f"{downstream_input.__name__} (input of '{name}')"
                             )
                 continue
             elif isinstance(deps, str):
