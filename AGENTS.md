@@ -26,6 +26,7 @@ mypy taskmaestro               # type check (strict mode)
 | `taskmaestro/dependencies.py`, `taskmaestro/mapping.py` | Task handles (incl. guard sugar `on`/`otherwise`/`if_true`/`if_false`), output references, `collect()`, `first_of()`, mapped-task configuration |
 | `taskmaestro/conditions.py` | `SwitchTask[I, L]`/`ConditionTask[I]` (label in a `Branch` output), `Condition` (unresolved `when=`), `Guard` (resolved), `when()`, `ContextFlag` (condition on a context value; `Runner.run` checks configured keys are registered before running) |
 | `taskmaestro/condition_tasks.py` | Ready-made conditions registered as `condition.*` task entry points: `Compare`, `IsTrue`, `PathExists` |
+| `taskmaestro/scripts.py` | Built-in subprocess tasks `taskmaestro.python` (`PythonScript`) and `taskmaestro.command` (`Command`), `ScriptOutput`; JSON exchange via `TASKMAESTRO_INPUT`/`TASKMAESTRO_OUTPUT` (see `docs/script-tasks.md`) |
 | `taskmaestro/workflow_task.py` | Nested workflows wrapped as tasks |
 | `taskmaestro/yaml_config.py` | YAML parsing, task imports, workflow and input validation; `load_registered_workflow` pairs an entry-point workflow with an input file |
 | `taskmaestro/cli.py`, `taskmaestro/discovery.py` | CLI (`run`, `validate`, `graph`, `tasks list/describe`, `workflow list/describe`; workflow arguments accept a YAML path or a registered workflow name), plugin entry-point discovery (`load_registry` collects broken entry points instead of raising) |
@@ -46,6 +47,7 @@ mypy taskmaestro               # type check (strict mode)
 - **Hook error swallowing**: `_emit()` wraps each hook call in try/except, reports via `warnings.warn(..., HookError, source=exc)` — message includes `repr(exc)`; `HookError` subclasses `UserWarning` so it can be filtered or escalated
 - **Inner-workflow failures**: `workflow_task` raises `WorkflowTaskError` (a `TaskExecutionError`) carrying `inner_job` and chaining the original exception via `__cause__`; `Job.exception` keeps the raw exception alongside `Job.error`
 - **Conditional branches**: a `when=` guard is a control edge (ordering + predicate, no data); guard sources count as upstreams for topo order, cycles and sinks. A task that is not run gets `TaskStatus.SKIPPED` + `skip_reason` and `on_task_skip(job, task_name, reason)` (no `task_start`). Skips propagate through plain deps; `collect()` drops skipped members; `first_of` takes the first member that ran; a skipped result task fails the job with `ResultTaskSkippedError`. Every switch label needs an `on()` or `otherwise()`
+- **Script tasks**: `inputs` is `dict[str, Any]`, wired with a keyed `collect`; subprocesses only (no in-process mode). Relative paths resolve against the process CWD. Failures raise `ScriptError` (a `TaskExecutionError`)
 - **Validation order**: unique names → references → acyclic (DFS) → task maps → guards (incl. switch label coverage) → type chain (incl. `first_of`) → result task detection
 
 ## Testing Conventions

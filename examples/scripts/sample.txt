@@ -1,0 +1,3 @@
+Taskmaestro runs typed tasks in a workflow.
+A script task runs a script, and a command task runs a command.
+Tasks pass JSON to scripts and scripts pass JSON back to tasks.

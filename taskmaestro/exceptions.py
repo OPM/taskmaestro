@@ -86,6 +86,28 @@ class WorkflowTaskError(TaskExecutionError):
         )
 
 
+class ScriptError(TaskExecutionError):
+    """A script or command run by ``taskmaestro.python``/``taskmaestro.command`` failed.
+
+    ``returncode`` is ``None`` when the process was not started or did not finish
+    (missing script, unserializable inputs, timeout). ``stdout``/``stderr`` hold the
+    captured output, if any.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        returncode: int | None = None,
+        stdout: str = "",
+        stderr: str = "",
+    ) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
 class ConfigLoadError(WorkflowRunnerError):
     """Raised when YAML config loading fails (parse errors, import failures, validation)."""
 

@@ -1,0 +1,8 @@
+word_count:
+  script: examples/scripts/word_count.py
+  args: [examples/scripts/sample.txt, "5"]
+count_bytes:
+  command: [wc, -c, examples/scripts/sample.txt]
+save_report:
+  command: sh examples/scripts/save_report.sh
+  env: {REPORT_DIR: /tmp/taskmaestro-script-tasks}

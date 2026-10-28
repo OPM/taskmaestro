@@ -78,7 +78,10 @@ def test_condition_tasks_are_registered() -> None:
     for name, target in registered.items():
         module, _, attribute = target.partition(":")
         loaded[name] = getattr(import_module(module), attribute)
-    assert loaded == {
+    condition_entries = {
+        name: obj for name, obj in loaded.items() if name.startswith("condition.")
+    }
+    assert condition_entries == {
         "condition.compare": Compare,
         "condition.is_true": IsTrue,
         "condition.path_exists": PathExists,

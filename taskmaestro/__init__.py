@@ -33,6 +33,7 @@ from taskmaestro.exceptions import (
     MappedTaskExecutionError,
     PluginLoadError,
     ResultTaskSkippedError,
+    ScriptError,
     TaskExecutionError,
     TaskOutputTypeError,
     TaskTimeoutError,
@@ -45,6 +46,13 @@ from taskmaestro.job import EmptyConfig, Job, JobConfiguration, JobStatus, TaskR
 from taskmaestro.mapping import MappedOutput, TaskMap
 from taskmaestro.object_model import ObjectModel
 from taskmaestro.runner import HookError, Runner
+from taskmaestro.scripts import (
+    Command,
+    CommandInput,
+    PythonScript,
+    PythonScriptInput,
+    ScriptOutput,
+)
 from taskmaestro.task import Task
 from taskmaestro.visualization import to_mermaid
 from taskmaestro.workflow import Workflow, WorkflowBuilder
@@ -60,6 +68,8 @@ __all__ = [
     "TASK_ENTRY_POINT_GROUP",
     "WORKFLOW_ENTRY_POINT_GROUP",
     "Branch",
+    "Command",
+    "CommandInput",
     "Condition",
     "ConditionTask",
     "ConfigLoadError",
@@ -82,8 +92,12 @@ __all__ = [
     "ObjectModel",
     "OutputHandle",
     "PluginLoadError",
+    "PythonScript",
+    "PythonScriptInput",
     "ResultTaskSkippedError",
     "Runner",
+    "ScriptError",
+    "ScriptOutput",
     "SwitchTask",
     "Task",
     "TaskExecutionError",

@@ -705,6 +705,59 @@ workflow:
 The same root/result type inference and single-unconfigured-root requirement apply as for
 `Workflow.as_task()`.
 
+## Script and Command Tasks
+
+Two built-in tasks run user code without a Task class. Both run a subprocess and return
+`ScriptOutput` (`result`, `returncode`, `stdout`, `stderr`):
+
+| Task id | Runs | Main settings |
+|---|---|---|
+| `taskmaestro.python` | `<current python> <script> <args...>` | `script`, `args` |
+| `taskmaestro.command` | A string through the shell, or a list as an executable with arguments (no shell) | `command` |
+
+Shared settings: `inputs` (upstream data), `env` (extra environment variables), `cwd`,
+`timeout` (seconds; the process is killed) and `check` (default `true`: a nonzero exit
+code fails the task with `ScriptError`, including the last lines of stderr). Absolute paths
+are used as given; relative `script` and `cwd` paths resolve against the current directory
+of the process running the workflow.
+
+Data is exchanged through JSON files in a fresh directory under the scratch directory,
+deleted when the task finishes:
+
+- `TASKMAESTRO_INPUT`: path to a JSON object holding `inputs` (set when `inputs` is not empty).
+- `TASKMAESTRO_OUTPUT`: path where the process may write a JSON value; it becomes `result`.
+
+`inputs` is a `dict[str, Any]`, connected with a keyed `collect` so scripts always receive a
+JSON object. Runtime-only objects (such as `ObjectModel[rips.EclipseCase]`) cannot be sent to a
+process and fail the task; use a regular `Task` for those.
+
+Their settings are ordinary input fields, given per task in `input.yaml`:
+
+```yaml
+# workflow.yaml (tasks)
+- task: taskmaestro.python
+  name: word_count
+- task: taskmaestro.command
+  name: save_report
+  depends_on:
+    inputs:
+      collect: {counts: [word_count, result]}
+```
+
+```yaml
+# input.yaml
+word_count:
+  script: scripts/word_count.py
+  args: [data/sample.txt]
+save_report:
+  command: sh scripts/save_report.sh
+  env: {REPORT_DIR: /tmp/reports}
+```
+
+Downstream tasks can use a single field, e.g. `depends_on: {path: [save_report, result]}`;
+the downstream input model validates the value at run time. See
+[`docs/script-tasks.md`](docs/script-tasks.md) and `examples/scripts/`.
+
 ## Visualization
 
 Generate Mermaid diagrams of workflow topology:
@@ -750,6 +803,7 @@ WorkflowRunnerError (base)
 └── TaskExecutionError            # Runtime task failure
     ├── MappedTaskExecutionError  # One or more mapped items failed
     ├── ResultTaskSkippedError    # The result task was skipped by a condition
+    ├── ScriptError               # A script/command task failed (returncode, stdout, stderr)
     ├── TaskOutputTypeError       # Output type mismatch
     └── TaskTimeoutError          # Task exceeded timeout
 ```
@@ -858,7 +912,7 @@ prints indented JSON.
 
 ## Examples
 
-Six full example pipelines are included in the `examples/` directory:
+Seven full example pipelines are included in the `examples/` directory:
 
 | Example | Features |
 |---|---|
@@ -868,6 +922,7 @@ Six full example pipelines are included in the `examples/` directory:
 | `examples/release_pipeline/` | Keyed `collect()` dependencies, mapped tasks, mapped output routing, per-task YAML config |
 | `examples/conditional_if/` | If/else with `ConditionTask`, `if_true()`/`if_false()` guards, `first_of` join, YAML `when:` |
 | `examples/conditional_switch/` | Multi-way `SwitchTask` with `on(...)` and `otherwise()`, `first_of` join, YAML `when:` |
+| `examples/scripts/` | `taskmaestro.python` and `taskmaestro.command` tasks, keyed `collect` into a script (YAML only; run from the repository root) |
 
 Run an example:
 
