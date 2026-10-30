@@ -1,6 +1,6 @@
 """Workflow Runner: typed DAG task workflows with Pydantic models."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from taskmaestro.conditions import (
     Branch,
