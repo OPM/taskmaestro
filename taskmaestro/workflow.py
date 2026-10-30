@@ -28,6 +28,7 @@ from taskmaestro.dependencies import (
     CollectionRef,
     FirstOfDependency,
     FirstOfRef,
+    MemberMode,
     OutputHandle,
     OutputRef,
     OutputReference,
@@ -586,7 +587,7 @@ class Workflow:
                                 f"Field '{field_name}' on task '{name}' is supplied by both "
                                 "a collection dependency and config_fields"
                             )
-                        self._validate_collection(
+                        deps[field_name] = self._validate_collection(
                             name,
                             field_name,
                             field_annotation,
@@ -672,20 +673,25 @@ class Workflow:
         field_name: str,
         field_annotation: Any,
         collection: CollectionRef,
-    ) -> None:
-        """Validate a collection dependency against its destination field."""
+    ) -> CollectionRef:
+        """Validate a collection dependency and resolve how each member is added.
+
+        A member whose value is an element is added as one item. Otherwise a
+        ``list[T]`` (list collections only) or ``dict[str, T]`` member is
+        flattened into the collection; a whole mapped-task output is flattened
+        through its ``root`` dictionary. Returns the collection with resolved
+        member modes and references.
+        """
         origin = get_origin(field_annotation)
         args = get_args(field_annotation)
-        if collection.kind == "positional":
+        keyed = collection.kind == "keyed"
+        if not keyed:
             if origin is not list or len(args) != 1:
                 raise WorkflowDefinitionError(
                     f"Positional collection for '{task_name}.{field_name}' requires "
                     f"a list[T] field, got {_type_name(field_annotation)}"
                 )
             expected_type = args[0]
-            members = [
-                (str(index), ref) for index, ref in enumerate(collection.positional_members)
-            ]
         else:
             if origin is not dict or len(args) != 2 or args[0] is not str:
                 raise WorkflowDefinitionError(
@@ -693,20 +699,75 @@ class Workflow:
                     f"a dict[str, T] field, got {_type_name(field_annotation)}"
                 )
             expected_type = args[1]
-            members = list(collection.keyed_members)
 
-        for member_label, ref in members:
+        refs: list[OutputRef] = []
+        modes: list[MemberMode] = []
+        for member_label, ref, _mode in collection.labeled_members():
             produced_type = self._resolve_output_ref_type(ref)
-            if produced_type is not None and not _is_type_compatible(produced_type, expected_type):
+            mode = self._collection_member_mode(produced_type, expected_type, keyed)
+            if mode is None and ref.output_field is None and self.is_mapped_task(ref.task_name):
+                root_type = produced_type.model_fields["root"].annotation
+                mode = self._collection_member_mode(root_type, expected_type, keyed)
+                if mode is not None:
+                    ref = OutputRef(ref.task_name, "root")
+            if mode is None:
                 source = ref.task_name
                 if ref.output_field is not None:
                     source += f".{ref.output_field}"
+                spreadable = (
+                    f"dict[str, {_type_name(expected_type)}]"
+                    if keyed
+                    else f"list[{_type_name(expected_type)}] or "
+                    f"dict[str, {_type_name(expected_type)}]"
+                )
                 raise WorkflowDefinitionError(
                     f"Collection type mismatch for "
                     f"'{task_name}.{field_name}[{member_label}]': '{source}' produces "
                     f"{_type_name(produced_type)}, but collection element type is "
-                    f"{_type_name(expected_type)}"
+                    f"{_type_name(expected_type)} (members may also produce {spreadable})"
                 )
+            refs.append(ref)
+            modes.append(mode)
+
+        if keyed:
+            return CollectionRef(
+                "keyed",
+                keyed_members=tuple(
+                    (key, ref)
+                    for (key, _old), ref in zip(collection.keyed_members, refs, strict=True)
+                ),
+                member_modes=tuple(modes),
+            )
+        return CollectionRef(
+            "positional", positional_members=tuple(refs), member_modes=tuple(modes)
+        )
+
+    @staticmethod
+    def _collection_member_mode(produced: Any, expected: Any, keyed: bool) -> MemberMode | None:
+        """Return how a member producing *produced* joins a collection of *expected*.
+
+        An exact element match wins, so ``list[dict[str, T]]`` fields still take
+        dictionaries as items. ``None`` means the member is incompatible.
+        """
+        if produced is None or _is_type_compatible(produced, expected):
+            return "item"
+        origin = get_origin(produced)
+        args = get_args(produced)
+        if (
+            not keyed
+            and origin is list
+            and len(args) == 1
+            and _is_type_compatible(args[0], expected)
+        ):
+            return "list"
+        if (
+            origin is dict
+            and len(args) == 2
+            and args[0] is str
+            and _is_type_compatible(args[1], expected)
+        ):
+            return "dict"
+        return None
 
     def _validate_first_of(
         self,

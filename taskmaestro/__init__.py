@@ -24,6 +24,7 @@ from taskmaestro.discovery import (
     registered_workflows,
 )
 from taskmaestro.exceptions import (
+    CollectionKeyConflictError,
     ConfigLoadError,
     ContextValueMissingError,
     CycleDetectedError,
@@ -68,6 +69,7 @@ __all__ = [
     "TASK_ENTRY_POINT_GROUP",
     "WORKFLOW_ENTRY_POINT_GROUP",
     "Branch",
+    "CollectionKeyConflictError",
     "Command",
     "CommandInput",
     "Condition",

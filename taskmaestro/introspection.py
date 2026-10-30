@@ -121,11 +121,15 @@ def dependency_spec(deps: Any) -> Any:
     result: dict[str, Any] = {}
     for field, ref in deps.items():
         if isinstance(ref, CollectionRef):
-            members: list[Any] | dict[str, Any]
-            if ref.kind == "keyed":
-                members = {key: _output_ref(item) for key, item in ref.keyed_members}
-            else:
-                members = [_output_ref(item) for item in ref.positional_members]
+            members: list[Any] | dict[str, Any] = {} if ref.kind == "keyed" else []
+            for label, item, mode in ref.labeled_members():
+                spec: dict[str, Any] = _output_ref(item)
+                if mode != "item":
+                    spec["spread"] = mode
+                if isinstance(members, dict):
+                    members[label] = spec
+                else:
+                    members.append(spec)
             result[field] = {"collect": {"kind": ref.kind, "members": members}}
         elif isinstance(ref, FirstOfRef):
             result[field] = {"first_of": [_output_ref(item) for item in ref.members]}

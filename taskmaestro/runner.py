@@ -10,13 +10,14 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel
 
 from taskmaestro.context import ExecutionContext
 from taskmaestro.dependencies import CollectionRef, FirstOfRef, OutputRef
 from taskmaestro.exceptions import (
+    CollectionKeyConflictError,
     ContextValueMissingError,
     JobStateError,
     MappedTaskExecutionError,
@@ -590,19 +591,46 @@ class Runner:
     ) -> object:
         """Resolve a collection while preserving its declaration order.
 
-        Members whose task was skipped are left out.
+        Members whose task was skipped are left out. Spread members are
+        flattened: list items and dictionary values join a list collection,
+        dictionary entries join a keyed collection.
         """
-        if collection.kind == "positional":
-            return [
-                Runner._resolve_output_ref(ref, outputs)
-                for ref in collection.positional_members
-                if ref.task_name in outputs
-            ]
-        return {
-            key: Runner._resolve_output_ref(ref, outputs)
-            for key, ref in collection.keyed_members
+        members = [
+            (label, ref, mode, Runner._resolve_output_ref(ref, outputs))
+            for label, ref, mode in collection.labeled_members()
             if ref.task_name in outputs
-        }
+        ]
+        if collection.kind == "positional":
+            items: list[object] = []
+            for _label, _ref, mode, value in members:
+                if mode == "list":
+                    items.extend(cast("list[object]", value))
+                elif mode == "dict":
+                    items.extend(cast("Mapping[str, object]", value).values())
+                else:
+                    items.append(value)
+            return items
+
+        entries: dict[str, object] = {}
+        sources: dict[str, str] = {}
+        for label, ref, mode, value in members:
+            source = (
+                ref.task_name
+                if ref.output_field is None
+                else f"{ref.task_name}.{ref.output_field}"
+            )
+            additions = (
+                cast("Mapping[str, object]", value).items() if mode == "dict" else [(label, value)]
+            )
+            for key, item in additions:
+                if key in entries:
+                    raise CollectionKeyConflictError(
+                        f"Keyed collection key '{key}' is supplied by both "
+                        f"'{sources[key]}' and '{source}'"
+                    )
+                entries[key] = item
+                sources[key] = source
+        return entries
 
     def _arm(self, task_timeout: float | None, label: str, deadline: _Deadline) -> None:
         """Arm the timer for one unit of work.
