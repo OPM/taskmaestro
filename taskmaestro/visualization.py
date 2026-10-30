@@ -153,16 +153,11 @@ def _emit_edges(
                 elif isinstance(upstream_ref, CollectionRef):
                     collection_node = f"_collect_{tgt_name}_{down_field}_"
                     lines.append(f'{indent}{collection_node}{{{{"collect {down_field}"}}}}')
-                    if upstream_ref.kind == "positional":
-                        members = [
-                            (str(index), ref)
-                            for index, ref in enumerate(upstream_ref.positional_members)
-                        ]
-                    else:
-                        members = list(upstream_ref.keyed_members)
-                    for member_label, ref in members:
+                    for member_label, ref, mode in upstream_ref.labeled_members():
                         upstream_src = _apply_redirect(ref.task_name, source_redirect)
                         label = _output_ref_label(workflow, task_by_name, ref)
+                        if mode != "item":
+                            member_label = f"*{member_label}"
                         lines.append(
                             f"{indent}{upstream_src} -->|{member_label}: {label}| "
                             f"{collection_node}"

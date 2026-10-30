@@ -118,19 +118,39 @@ class OutputRef:
     output_field: str | None = None
 
 
+type MemberMode = Literal["item", "list", "dict"]
+
+
 @dataclass(frozen=True)
 class CollectionRef:
-    """A collection dependency whose task references have been resolved."""
+    """A collection dependency whose task references have been resolved.
+
+    ``member_modes`` is filled in by workflow validation, aligned with
+    :meth:`output_refs`: ``"item"`` adds a member's value as one element,
+    ``"list"`` and ``"dict"`` flatten a ``list[T]`` or ``dict[str, T]`` value
+    into the collection. An empty tuple means every member is an item.
+    """
 
     kind: Literal["positional", "keyed"]
     positional_members: tuple[OutputRef, ...] = ()
     keyed_members: tuple[tuple[str, OutputRef], ...] = ()
+    member_modes: tuple[MemberMode, ...] = ()
 
     def output_refs(self) -> tuple[OutputRef, ...]:
         """Return all output references in declaration order."""
         if self.kind == "positional":
             return self.positional_members
         return tuple(ref for _key, ref in self.keyed_members)
+
+    def labeled_members(self) -> tuple[tuple[str, OutputRef, MemberMode], ...]:
+        """Return ``(label, ref, mode)`` per member; labels are list indexes or keys."""
+        if self.kind == "positional":
+            labeled = [(str(index), ref) for index, ref in enumerate(self.positional_members)]
+        else:
+            labeled = list(self.keyed_members)
+        item: MemberMode = "item"
+        modes = self.member_modes or (item,) * len(labeled)
+        return tuple((label, ref, mode) for (label, ref), mode in zip(labeled, modes, strict=True))
 
 
 @overload

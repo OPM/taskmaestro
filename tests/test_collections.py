@@ -9,18 +9,22 @@ import pytest
 from pydantic import BaseModel
 
 from taskmaestro import (
+    CollectionKeyConflictError,
     ConfigLoadError,
     EmptyConfig,
     ExecutionContext,
     Job,
+    JobConfiguration,
     JobStatus,
     Runner,
     Task,
+    TaskMap,
     Workflow,
     WorkflowDefinitionError,
     collect,
     load_workflow_from_yaml,
 )
+from taskmaestro.introspection import describe_workflow
 from taskmaestro.workflow import _is_type_compatible, _type_name
 from tests.conftest import NumberInput
 
@@ -125,6 +129,43 @@ class ProduceText(Task[NumberInput, TextOutput]):
 
     def run(self, input: NumberInput, ctx: ExecutionContext) -> TextOutput:
         return TextOutput(text=str(input.value))
+
+
+class SurfaceBatch(BaseModel):
+    listed: list[RegularSurface]
+    keyed: dict[str, RegularSurface]
+    texts: list[TextOutput]
+
+
+class ProduceSurfaceBatch(Task[NumberInput, SurfaceBatch]):
+    name = "produce_surface_batch"
+
+    def run(self, input: NumberInput, ctx: ExecutionContext) -> SurfaceBatch:
+        return SurfaceBatch(
+            listed=[RegularSurface(name="l1"), RegularSurface(name="l2")],
+            keyed={"top": RegularSurface(name="k1"), "base": RegularSurface(name="k2")},
+            texts=[],
+        )
+
+
+class MappedSurfaceInput(BaseModel):
+    key: str
+    depth: int
+
+
+class MapSurface(Task[MappedSurfaceInput, RegularSurface]):
+    name = "map_surface"
+
+    def run(self, input: MappedSurfaceInput, ctx: ExecutionContext) -> RegularSurface:
+        return RegularSurface(name=f"{input.key}@{input.depth}")
+
+
+def _surface_map() -> TaskMap:
+    return TaskMap(over="depths", key_as="key", value_as="depth")
+
+
+def _depths_configuration() -> JobConfiguration:
+    return JobConfiguration({"map_surface": {"depths": {"m1": 10, "m2": 20}}})
 
 
 class TestCollectDeclaration:
@@ -394,6 +435,184 @@ class TestCollectionWorkflow:
                 )
                 .build()
             )
+
+
+class TestCollectionFlattening:
+    def _list_workflow(self) -> Workflow:
+        return (
+            Workflow.builder("flatten_list")
+            .add_task(ProduceSurface)
+            .add_task(ProduceSurfaceBatch)
+            .add_task(MapSurface, mapped_over=_surface_map())
+            .add_task(
+                CollectSurfaceList,
+                depends_on={
+                    "surfaces": collect(
+                        ProduceSurface,
+                        (ProduceSurfaceBatch, "listed"),
+                        (ProduceSurfaceBatch, "keyed"),
+                        MapSurface,
+                    )
+                },
+            )
+            .build()
+        )
+
+    def test_list_collection_flattens_list_dict_and_mapped_members(self) -> None:
+        workflow = self._list_workflow()
+
+        result = Runner().run(
+            Job(workflow, NumberInput(value=1), job_configuration=_depths_configuration())
+        )
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == SurfaceNames(
+            names=["produce_surface-1", "l1", "l2", "k1", "k2", "m1@10", "m2@20"]
+        )
+
+    def test_spread_members_are_described_and_drawn(self) -> None:
+        workflow = self._list_workflow()
+
+        members = describe_workflow(workflow)["tasks"][-1]["depends_on"]["surfaces"]["collect"][
+            "members"
+        ]
+        diagram = workflow.to_mermaid()
+
+        assert members == [
+            {"task": "produce_surface", "field": None},
+            {"task": "produce_surface_batch", "field": "listed", "spread": "list"},
+            {"task": "produce_surface_batch", "field": "keyed", "spread": "dict"},
+            {"task": "map_surface", "field": "root", "spread": "dict"},
+        ]
+        assert "produce_surface -->|0: RegularSurface|" in diagram
+        assert "produce_surface_batch -->|*1: .listed: list&lsaquo;RegularSurface&rsaquo;|" in (
+            diagram
+        )
+
+    def test_keyed_collection_merges_dictionary_members(self) -> None:
+        workflow = (
+            Workflow.builder("flatten_keyed")
+            .add_task(ProduceSurface)
+            .add_task(ProduceSurfaceBatch)
+            .add_task(MapSurface, mapped_over=_surface_map())
+            .add_task(
+                CollectSurfaceDict,
+                depends_on={
+                    "surfaces": collect(
+                        {
+                            "single": ProduceSurface,
+                            "batch": (ProduceSurfaceBatch, "keyed"),
+                            "mapped": MapSurface,
+                        }
+                    )
+                },
+            )
+            .build()
+        )
+
+        result = Runner().run(
+            Job(workflow, NumberInput(value=1), job_configuration=_depths_configuration())
+        )
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == SurfaceNames(
+            names=[
+                "single:produce_surface-1",
+                "top:k1",
+                "base:k2",
+                "m1:m1@10",
+                "m2:m2@20",
+            ]
+        )
+
+    def test_keyed_collection_duplicate_key_fails_the_task(self) -> None:
+        workflow = (
+            Workflow.builder("duplicate_keys")
+            .add_task(ProduceSurface)
+            .add_task(ProduceSurfaceBatch)
+            .add_task(
+                CollectSurfaceDict,
+                depends_on={
+                    "surfaces": collect(
+                        top=ProduceSurface,
+                        batch=(ProduceSurfaceBatch, "keyed"),
+                    )
+                },
+            )
+            .build()
+        )
+
+        result = Runner().run(Job(workflow, NumberInput(value=1)))
+
+        assert result.status == JobStatus.FAILED
+        assert result.failed_task == "collect_surface_dict"
+        assert isinstance(result.exception, CollectionKeyConflictError)
+        assert "'top'" in str(result.exception)
+        assert "produce_surface_batch.keyed" in str(result.exception)
+
+    def test_keyed_collection_rejects_list_members(self) -> None:
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"produces list\[RegularSurface\].*may also produce dict\[str, Surface\]\)",
+        ):
+            (
+                Workflow.builder("keyed_list_member")
+                .add_task(ProduceSurfaceBatch)
+                .add_task(
+                    CollectSurfaceDict,
+                    depends_on={"surfaces": collect(batch=(ProduceSurfaceBatch, "listed"))},
+                )
+                .build()
+            )
+
+    def test_incompatible_spread_element_is_rejected(self) -> None:
+        with pytest.raises(
+            WorkflowDefinitionError,
+            match=r"produces list\[TextOutput\].*list\[Surface\] or dict\[str, Surface\]",
+        ):
+            (
+                Workflow.builder("bad_spread")
+                .add_task(ProduceSurfaceBatch)
+                .add_task(
+                    CollectSurfaceList,
+                    depends_on={"surfaces": collect((ProduceSurfaceBatch, "texts"))},
+                )
+                .build()
+            )
+
+    def test_yaml_collection_flattens_mapped_and_dict_members(self, tmp_path: Path) -> None:
+        module = "tests.test_collections"
+        workflow_path = tmp_path / "workflow.yaml"
+        workflow_path.write_text(
+            f"""\
+workflow:
+  name: yaml_flatten
+  tasks:
+    - task: {module}.ProduceSurface
+      name: single
+    - task: {module}.ProduceSurfaceBatch
+      name: batch
+    - task: {module}.MapSurface
+      name: mapped
+      map: {{over: depths, key_as: key, value_as: depth}}
+    - task: {module}.CollectSurfaceList
+      depends_on:
+        surfaces:
+          collect:
+            - single
+            - [batch, keyed]
+            - mapped
+"""
+        )
+        input_path = tmp_path / "input.yaml"
+        input_path.write_text(
+            "single:\n  value: 2\nbatch:\n  value: 2\nmapped:\n  depths: {m1: 1}\n"
+        )
+
+        result = load_workflow_from_yaml(workflow_path, input_path).run()
+
+        assert result.status == JobStatus.COMPLETED
+        assert result.result == SurfaceNames(names=["single-2", "k1", "k2", "m1@1"])
 
 
 class TestCollectionVisualization:

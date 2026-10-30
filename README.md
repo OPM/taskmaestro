@@ -333,6 +333,32 @@ Every member is checked against the field's element type when the workflow is
 built. Subtypes are accepted. `collect()` and `collect({})` explicitly create
 empty list and dictionary inputs, respectively.
 
+### Flattening list and dictionary members
+
+A member that produces a `list[T]` or `dict[str, T]` (for example a mapped
+task's output) is flattened into a list collection of `T`, in declaration
+order. A dictionary contributes its values in insertion order and its keys
+are dropped. A whole mapped-task output is flattened through its `root`
+dictionary, so no `[task, root]` reference is needed:
+
+```yaml
+depends_on:
+  perforations:
+    collect:
+      - add_perf_1                         # PerforationOutput -> one item
+      - [batch_perforations, perforations] # dict[str, PerforationOutput] -> values
+      - mapped_perforation                 # mapped task -> one item per map key
+```
+
+In a keyed collection (`dict[str, T]` field), a `dict[str, T]` member is merged
+in with its own keys; its alias is not used as a key. If two members supply the
+same key, the task fails with `CollectionKeyConflictError`. List members are
+rejected in keyed collections.
+
+A member whose value already matches the element type is always added as one
+item. So a `list[dict[str, T]]` field still receives each dictionary whole.
+Only one level is flattened.
+
 ## Mapped Tasks
 
 A mapped task invokes one task declaration for every entry in a configured
@@ -881,7 +907,8 @@ workflow name and result task plus topologically ordered task instances. Each
 instance includes its `name`, `python_type`, `depends_on` references (`task` /
 `field`), `config_fields`, `required_input_fields`, optional `map` configuration,
 and Pydantic input/output schemas. Collection dependencies include their kind
-(`positional` or `keyed`) and member references. `python_type` identifies the
+(`positional` or `keyed`) and member references; flattened members add
+`"spread": "list"` or `"spread": "dict"`. `python_type` identifies the
 loaded class; it may differ from the plugin entry-point identifier used in YAML.
 `source` tells where the workflow came from: `{"kind": "yaml", "path": "/abs/workflow.yaml"}`
 or `{"kind": "entry_point", "name": "resinsight.completions"}`.

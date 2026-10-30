@@ -68,6 +68,10 @@ class ResultTaskSkippedError(TaskExecutionError):
     """The workflow's result task was skipped by conditional execution."""
 
 
+class CollectionKeyConflictError(TaskExecutionError):
+    """Two members of a keyed collection supplied the same key."""
+
+
 class WorkflowTaskError(TaskExecutionError):
     """An inner workflow wrapped by ``workflow_task`` failed.
 
